@@ -1,0 +1,42 @@
+/* Device Styling */
+.device {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    cursor: grab;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: #ffffff;
+    position: relative;
+    text-align: center;
+}
+
+.vm {
+    background-color: #007bff;
+}
+
+.switch {
+    background-color: #28a745;
+}
+
+.router {
+    background-color: #ff073a;
+}
+
+.device .details {
+    position: absolute;
+    bottom: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: rgba(0, 0, 0, 0.7);
+    padding: 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    white-space: nowrap;
+    display: none;
+}
+
+.device:hover .details {
+    display: block;
+}
