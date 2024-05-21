@@ -7,9 +7,50 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+const convertSpeedToMbps = (speedStr) => {
+  const units = {
+    bps: 1 / 1000000,
+    Kbps: 1 / 1000,
+    Mbps: 1,
+    Gbps: 1000,
+    Tbps: 1000000
+  };
+
+  const match = speedStr.match(/^(\d+(?:\.\d+)?)\s?([a-zA-Z]+)$/);
+  if (!match) {
+    throw new Error('Invalid speed format');
+  }
+
+  const value = parseFloat(match[1]);
+  const unit = match[2];
+
+  if (!units[unit]) {
+    throw new Error(`Unsupported unit: ${unit}`);
+  }
+
+  return { value: value * units[unit], unit };
+};
+
+
+const convertSpeedFromMbps = (speed, unit) => {
+  const units = {
+    bps: 1000000,
+    Kbps: 1000,
+    Mbps: 1,
+    Gbps: 1 / 1000,
+    Tbps: 1 / 1000000
+  };
+
+  if (!units[unit]) {
+    throw new Error(`Unsupported unit: ${unit}`);
+  }
+
+  return speed * units[unit];
+};
+
 const driver = neo4j.driver(
   process.env.NEO4J_URI || 'bolt://localhost:7687',
-  neo4j.auth.basic(process.env.NEO4J_USER || 'neo4j', process.env.NEO4J_PASSWORD || 'Polska_30')
+  neo4j.auth.basic(process.env.NEO4J_USER || 'neo4j', process.env.NEO4J_PASSWORD || 'Trudnehaslo_30')
 );
 
 const clearDatabase = async () => {
@@ -63,6 +104,7 @@ app.post('/connections', async (req, res) => {
 
   try {
     console.log('Creating connection:', { from, to, speed });
+    const { value: speedMbps, unit } = convertSpeedToMbps(speed);
 
     const result = await session.run(
       'MATCH (a:Device {id: $fromId}), (b:Device {id: $toId}) RETURN a.type AS fromType, b.type AS toType',
@@ -83,11 +125,9 @@ app.post('/connections', async (req, res) => {
 
     const createResult = await session.run(
       'MATCH (a:Device {id: $fromId}), (b:Device {id: $toId}) ' +
-      'MERGE (a)-[r:CONNECTED_TO {speed: $speed}]->(b)',
-      { fromId: from, toId: to, speed }
+      'MERGE (a)-[r:CONNECTED_TO {speed: $speed, unit: $unit}]->(b)',
+      { fromId: from, toId: to, speed: speedMbps, unit: unit }
     );
-
-    console.log('Connection created:', createResult);
     res.send(createResult);
   } catch (error) {
     console.error('Error creating connection:', error);
@@ -107,7 +147,7 @@ app.get('/connections', async (req, res) => {
     const connections = result.records.map(record => ({
       from: record.get('from'),
       to: record.get('to'),
-      speed: record.get('speed')
+      speed: `${convertSpeedFromMbps(record.get('from'), record.get('unit'))}${record.get('unit')}`,
     }));
     res.send(connections);
   } catch (error) {
@@ -158,9 +198,11 @@ app.get('/devices/fastest-path/:from/:to', async (req, res) => {
       `MATCH (start:Device {id: $fromId}), (end:Device {id: $toId}),
       p = allShortestPaths((start)-[:CONNECTED_TO*]-(end))
       WHERE ALL(r IN relationships(p) WHERE r.speed IS NOT NULL)
-      RETURN p`,
+      WITH p, reduce(speedSum = 0, r in relationships(p) | speedSum + r.speed) as totalSpeed
+      RETURN p, totalSpeed ORDER BY totalSpeed DESC LIMIT 1`,
       { fromId: from, toId: to }
     );
+
 
     if (result.records.length === 0) {
       return res.status(404).send({ error: 'Path not found.' });
@@ -168,16 +210,11 @@ app.get('/devices/fastest-path/:from/:to', async (req, res) => {
 
     const paths = result.records.map(record => {
       const segments = record.get('p').segments;
-      const weight = segments.reduce((total, segment) => {
-        const speed = parseSpeed(segment.relationship.properties.speed);
-        return total + 1.0 / speed;
-      }, 0);
-      return { segments, weight };
+      return { segments };
     });
 
-    const fastestPath = paths.sort((a, b) => a.weight - b.weight)[0];
 
-    const path = fastestPath.segments.map(segment => ({
+    const path = paths[0].segments.map(segment => ({
       from: segment.start.properties,
       to: segment.end.properties,
       relationship: segment.relationship.properties
