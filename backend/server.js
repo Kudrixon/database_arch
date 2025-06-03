@@ -134,7 +134,7 @@ app.post('/connections', (req, res) => {
 });
 
 app.get('/connections', (req, res) => {
-  db.all('SELECT from_device as from, to_device as to, speed, unit FROM connections', [], (err, rows) => {
+  db.all('SELECT from_device AS "from", to_device AS "to", speed, unit FROM connections', [], (err, rows) => {
     if (err) {
       console.error('Error fetching connections:', err);
       return res.status(500).send(err);
@@ -210,7 +210,7 @@ app.get('/export/kubevirt', (req, res) => {
       return res.status(500).send(err);
     }
 
-    db.all('SELECT from_device as from, to_device as to, speed, unit FROM connections', [], (err2, connRows) => {
+    db.all('SELECT from_device AS "from", to_device AS "to", speed, unit FROM connections', [], (err2, connRows) => {
       if (err2) {
         console.error('Error fetching connections:', err2);
         return res.status(500).send(err2);
