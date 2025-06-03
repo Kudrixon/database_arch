@@ -1,5 +1,5 @@
 const express = require('express');
-const neo4j = require('neo4j-driver');
+const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const yaml = require('js-yaml');
@@ -49,186 +49,123 @@ const convertSpeedFromMbps = (speed, unit) => {
   return speed * units[unit];
 };
 
-const driver = neo4j.driver(
-  process.env.NEO4J_URI || 'bolt://localhost:7687',
-  neo4j.auth.basic(process.env.NEO4J_USER || 'neo4j', process.env.NEO4J_PASSWORD || 'Trudnehaslo_30')
-);
+const db = new sqlite3.Database('./database.sqlite');
 
-const clearDatabase = async () => {
-  const session = driver.session();
-  try {
-    await session.run('MATCH (n) DETACH DELETE n');
-    console.log('Database cleared');
-  } catch (error) {
-    console.error('Error clearing database:', error);
-  } finally {
-    await session.close();
-  }
+db.serialize(() => {
+  db.run('CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, type TEXT, cpu TEXT, memory TEXT, storage TEXT)');
+  db.run('CREATE TABLE IF NOT EXISTS connections (id INTEGER PRIMARY KEY AUTOINCREMENT, from_device TEXT, to_device TEXT, speed REAL, unit TEXT)');
+});
+
+const clearDatabase = () => {
+  return new Promise((resolve, reject) => {
+    db.serialize(() => {
+      db.run('DELETE FROM connections', (err) => {
+        if (err) return reject(err);
+        db.run('DELETE FROM devices', (err2) => {
+          if (err2) return reject(err2);
+          console.log('Database cleared');
+          resolve();
+        });
+      });
+    });
+  });
 };
 
 clearDatabase(); // Clear database on server start
 
 app.get('/clear-database', async (req, res) => {
-  await clearDatabase();
-  res.send({ message: 'Database cleared' });
-});
-
-const buildDevicePropertiesQuery = (params) => {
-  return Object.entries(params)
-    .filter(([key, value]) => value !== undefined)
-    .map(([key, value]) => `${key}: $${key}`)
-    .join(', ');
-};
-
-app.post('/devices', async (req, res) => {
-  const { id, type, cpu, memory, storage } = req.body;
-  const session = driver.session();
-  const deviceProperties = buildDevicePropertiesQuery({ id, type, cpu, memory, storage });
-
   try {
-    const result = await session.run(
-      `CREATE (a:Device {${deviceProperties}}) RETURN a`,
-      { id, type, cpu, memory, storage }
-    );
-    res.send(result);
-  } catch (error) {
-    console.error('Error creating device:', error);
-    res.status(500).send(error);
-  } finally {
-    await session.close();
+    await clearDatabase();
+    res.send({ message: 'Database cleared' });
+  } catch (err) {
+    res.status(500).send(err);
   }
 });
 
-app.post('/connections', async (req, res) => {
+app.post('/devices', (req, res) => {
+  const { id, type, cpu, memory, storage } = req.body;
+  db.run(
+    'INSERT INTO devices (id, type, cpu, memory, storage) VALUES (?, ?, ?, ?, ?)',
+    [id, type, cpu, memory, storage],
+    (err) => {
+      if (err) {
+        console.error('Error creating device:', err);
+        return res.status(500).send(err);
+      }
+      res.send({ id, type, cpu, memory, storage });
+    }
+  );
+});
+
+app.post('/connections', (req, res) => {
   const { from, to, speed } = req.body;
-  const session = driver.session();
+  console.log('Creating connection:', { from, to, speed });
+  const { value: speedMbps, unit } = convertSpeedToMbps(speed);
 
-  try {
-    console.log('Creating connection:', { from, to, speed });
-    const { value: speedMbps, unit } = convertSpeedToMbps(speed);
+  db.all('SELECT id, type FROM devices WHERE id IN (?, ?)', [from, to], (err, rows) => {
+    if (err) {
+      console.error('Error fetching devices:', err);
+      return res.status(500).send(err);
+    }
 
-    const result = await session.run(
-      'MATCH (a:Device {id: $fromId}), (b:Device {id: $toId}) RETURN a.type AS fromType, b.type AS toType',
-      { fromId: from, toId: to }
-    );
-
-    if (result.records.length === 0) {
-      console.error('Error: One or both devices not found.');
+    if (rows.length < 2) {
       return res.status(404).send({ error: 'One or both devices not found.' });
     }
 
-    const fromType = result.records[0].get('fromType');
-    const toType = result.records[0].get('toType');
+    const fromType = rows.find(r => r.id === from).type;
+    const toType = rows.find(r => r.id === to).type;
 
     if (fromType === 'vm' && toType === 'vm') {
       return res.status(400).send({ error: 'Connecting VM with VM is prohibited.' });
     }
 
-    const createResult = await session.run(
-      'MATCH (a:Device {id: $fromId}), (b:Device {id: $toId}) ' +
-      'MERGE (a)-[r:CONNECTED_TO {speed: $speed, unit: $unit}]->(b)',
-      { fromId: from, toId: to, speed: speedMbps, unit: unit }
+    db.run(
+      'INSERT INTO connections (from_device, to_device, speed, unit) VALUES (?, ?, ?, ?)',
+      [from, to, speedMbps, unit],
+      function (err2) {
+        if (err2) {
+          console.error('Error creating connection:', err2);
+          return res.status(500).send(err2);
+        }
+        res.send({ id: this.lastID });
+      }
     );
-    res.send(createResult);
-  } catch (error) {
-    console.error('Error creating connection:', error);
-    res.status(500).send(error);
-  } finally {
-    await session.close();
-  }
+  });
 });
 
-app.get('/connections', async (req, res) => {
-  const session = driver.session();
-
-  try {
-    const result = await session.run(
-      'MATCH (a:Device)-[r:CONNECTED_TO]->(b:Device) RETURN a.id AS from, b.id AS to, r.speed AS speed'
-    );
-    const connections = result.records.map(record => ({
-      from: record.get('from'),
-      to: record.get('to'),
-      speed: `${convertSpeedFromMbps(record.get('from'), record.get('unit'))}${record.get('unit')}`,
-    }));
-    res.send(connections);
-  } catch (error) {
-    console.error('Error fetching connections:', error);
-    res.status(500).send(error);
-  } finally {
-    await session.close();
-  }
-});
-
-app.post('/devices/delete', async (req, res) => {
-  const { deviceId } = req.body;
-  const session = driver.session();
-
-  try {
-    const result = await session.run(
-      'MATCH (a:Device {id: $deviceId}) DETACH DELETE a',
-      { deviceId }
-    );
-    res.send(result);
-  } catch (error) {
-    console.error('Error deleting device:', error);
-    res.status(500).send(error);
-  } finally {
-    await session.close();
-  }
-});
-
-const parseSpeed = (speed) => {
-  const [value, unit] = speed.split(' ');
-  const numericValue = parseFloat(value);
-  switch (unit.toLowerCase()) {
-    case 'gbps':
-      return numericValue * 1000;
-    case 'mbps':
-      return numericValue;
-    default:
-      return numericValue;
-  }
-};
-
-app.get('/devices/fastest-path/:from/:to', async (req, res) => {
-  const { from, to } = req.params;
-  const session = driver.session();
-
-  try {
-    const result = await session.run(
-      `MATCH (start:Device {id: $fromId}), (end:Device {id: $toId}),
-      p = allShortestPaths((start)-[:CONNECTED_TO*]-(end))
-      WHERE ALL(r IN relationships(p) WHERE r.speed IS NOT NULL)
-      WITH p, reduce(speedSum = 0, r in relationships(p) | speedSum + r.speed) as totalSpeed
-      RETURN p, totalSpeed ORDER BY totalSpeed DESC LIMIT 1`,
-      { fromId: from, toId: to }
-    );
-
-
-    if (result.records.length === 0) {
-      return res.status(404).send({ error: 'Path not found.' });
+app.get('/connections', (req, res) => {
+  db.all('SELECT from_device as from, to_device as to, speed, unit FROM connections', [], (err, rows) => {
+    if (err) {
+      console.error('Error fetching connections:', err);
+      return res.status(500).send(err);
     }
 
-    const paths = result.records.map(record => {
-      const segments = record.get('p').segments;
-      return { segments };
-    });
-
-
-    const path = paths[0].segments.map(segment => ({
-      from: segment.start.properties,
-      to: segment.end.properties,
-      relationship: segment.relationship.properties
+    const connections = rows.map(row => ({
+      from: row.from,
+      to: row.to,
+      speed: `${convertSpeedFromMbps(row.speed, row.unit)}${row.unit}`
     }));
-
-    res.send({ path });
-  } catch (error) {
-    console.error('Error finding fastest path:', error);
-    res.status(500).send(error);
-  } finally {
-    await session.close();
-  }
+    res.send(connections);
+  });
 });
+
+app.post('/devices/delete', (req, res) => {
+  const { deviceId } = req.body;
+  db.run('DELETE FROM connections WHERE from_device = ? OR to_device = ?', [deviceId, deviceId], (err) => {
+    if (err) {
+      console.error('Error deleting connections:', err);
+      return res.status(500).send(err);
+    }
+    db.run('DELETE FROM devices WHERE id = ?', [deviceId], (err2) => {
+      if (err2) {
+        console.error('Error deleting device:', err2);
+        return res.status(500).send(err2);
+      }
+      res.send({ message: 'Device deleted' });
+    });
+  });
+});
+
 
 const generateKubeVirtBlueprint = (vms, connections) => {
   const docs = [];
@@ -266,30 +203,30 @@ const generateKubeVirtBlueprint = (vms, connections) => {
   return docs.map(d => yaml.dump(d)).join('---\n');
 };
 
-app.get('/export/kubevirt', async (req, res) => {
-  const session = driver.session();
-  try {
-    const vmResult = await session.run('MATCH (d:Device {type: "vm"}) RETURN d');
-    const vms = vmResult.records.map(r => r.get('d').properties);
+app.get('/export/kubevirt', (req, res) => {
+  db.all('SELECT * FROM devices WHERE type = ?', ['vm'], (err, vms) => {
+    if (err) {
+      console.error('Error fetching VMs:', err);
+      return res.status(500).send(err);
+    }
 
-    const connResult = await session.run(
-      'MATCH (a:Device)-[r:CONNECTED_TO]->(b:Device) RETURN a.id AS from, b.id AS to, r.speed AS speed, r.unit AS unit'
-    );
-    const connections = connResult.records.map(r => ({
-      from: r.get('from'),
-      to: r.get('to'),
-      speed: `${r.get('speed')}${r.get('unit')}`
-    }));
+    db.all('SELECT from_device as from, to_device as to, speed, unit FROM connections', [], (err2, connRows) => {
+      if (err2) {
+        console.error('Error fetching connections:', err2);
+        return res.status(500).send(err2);
+      }
 
-    const yamlData = generateKubeVirtBlueprint(vms, connections);
-    res.header('Content-Type', 'application/x-yaml');
-    res.send(yamlData);
-  } catch (error) {
-    console.error('Error exporting KubeVirt blueprint:', error);
-    res.status(500).send(error);
-  } finally {
-    await session.close();
-  }
+      const connections = connRows.map(r => ({
+        from: r.from,
+        to: r.to,
+        speed: `${r.speed}${r.unit}`
+      }));
+
+      const yamlData = generateKubeVirtBlueprint(vms, connections);
+      res.header('Content-Type', 'application/x-yaml');
+      res.send(yamlData);
+    });
+  });
 });
 
 const PORT = process.env.PORT || 4000;

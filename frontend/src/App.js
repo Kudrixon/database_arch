@@ -10,9 +10,6 @@ const App = () => {
   const [deviceCounters, setDeviceCounters] = useState({ vm: 0, switch: 0, router: 0 });
   const [selectedDevice, setSelectedDevice] = useState(null);
   const [connections, setConnections] = useState([]);
-  const [fastestPath, setFastestPath] = useState([]);
-  const [startDevice, setStartDevice] = useState('');
-  const [endDevice, setEndDevice] = useState('');
 
   useEffect(() => {
     const initializeData = async () => {
@@ -137,14 +134,6 @@ const App = () => {
     }
   };
 
-  const findFastestPath = async (fromId, toId) => {
-    try {
-      const response = await axios.get(`http://localhost:4000/devices/fastest-path/${fromId}/${toId}`);
-      setFastestPath(response.data.path);
-    } catch (error) {
-      console.error('Error finding fastest path', error);
-    }
-  };
 
   const downloadYaml = async () => {
     try {
@@ -165,33 +154,6 @@ const App = () => {
     <div className="app">
       <h1>Design your infra here:</h1>
       <div className="path-selection">
-        <label>
-          Start Device:
-          <select onChange={(e) => setStartDevice(e.target.value)} value={startDevice}>
-            <option value="">Select a device</option>
-            {droppedDevices.map((device) => (
-              <option key={device.id} value={device.id}>{device.id}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          End Device:
-          <select onChange={(e) => setEndDevice(e.target.value)} value={endDevice}>
-            <option value="">Select a device</option>
-            {droppedDevices.map((device) => (
-              <option key={device.id} value={device.id}>{device.id}</option>
-            ))}
-          </select>
-        </label>
-        <button
-          onClick={() => {
-            if (startDevice && endDevice) {
-              findFastestPath(startDevice, endDevice);
-            }
-          }}
-        >
-          Find Fastest Path
-        </button>
         <button onClick={downloadYaml}>Download YAML</button>
       </div>
       <div className="container">
@@ -212,11 +174,6 @@ const App = () => {
             {connections.map((connection, index) => {
               const fromDevice = droppedDevices.find((device) => device.id === connection.from);
               const toDevice = droppedDevices.find((device) => device.id === connection.to);
-              const isFastestPath = fastestPath.some(
-                (segment) =>
-                  (segment.from.id === connection.from && segment.to.id === connection.to) ||
-                  (segment.from.id === connection.to && segment.to.id === connection.from)
-              );
               return (
                 fromDevice &&
                 toDevice && (
@@ -226,13 +183,13 @@ const App = () => {
                       y1={fromDevice.position.y + 40}
                       x2={toDevice.position.x + 40}
                       y2={toDevice.position.y + 40}
-                      stroke={isFastestPath ? 'blue' : 'white'}
-                      strokeWidth={isFastestPath ? 3 : 1}
+                      stroke="white"
+                      strokeWidth={1}
                     />
                     <text
                       x={(fromDevice.position.x + toDevice.position.x) / 2}
                       y={(fromDevice.position.y + toDevice.position.y) / 2}
-                      fill={isFastestPath ? 'blue' : 'red'}
+                      fill="red"
                     >
                       {connection.speed}
                     </text>

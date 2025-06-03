@@ -1,10 +1,10 @@
 # Database Arch
 
-This repository contains a simple web application for designing virtual infrastructure and storing relationships in Neo4j.
+This repository contains a simple web application for designing virtual infrastructure. Data is stored in a local SQLite database.
 
 ## Running
 
-Use docker-compose to start the backend, frontend and Neo4j database:
+Use docker-compose to start the backend and frontend:
 
 ```bash
 docker-compose up --build
