@@ -2,6 +2,7 @@ const express = require('express');
 const neo4j = require('neo4j-driver');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const yaml = require('js-yaml');
 
 const app = express();
 app.use(cors());
@@ -223,6 +224,68 @@ app.get('/devices/fastest-path/:from/:to', async (req, res) => {
     res.send({ path });
   } catch (error) {
     console.error('Error finding fastest path:', error);
+    res.status(500).send(error);
+  } finally {
+    await session.close();
+  }
+});
+
+const generateKubeVirtBlueprint = (vms, connections) => {
+  const docs = [];
+
+  vms.forEach(vm => {
+    const cpuCount = parseInt((vm.cpu || '').match(/\d+/)) || 1;
+    const memory = vm.memory || '1Gi';
+
+    docs.push({
+      apiVersion: 'kubevirt.io/v1',
+      kind: 'VirtualMachine',
+      metadata: { name: vm.id.toLowerCase() },
+      spec: {
+        running: false,
+        template: {
+          metadata: { labels: { 'kubevirt.io/domain': vm.id.toLowerCase() } },
+          spec: {
+            domain: {
+              cpu: { cores: cpuCount },
+              resources: { requests: { memory } }
+            }
+          }
+        }
+      }
+    });
+  });
+
+  docs.push({
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: { name: 'connections' },
+    data: { connections: JSON.stringify(connections, null, 2) }
+  });
+
+  return docs.map(d => yaml.dump(d)).join('---\n');
+};
+
+app.get('/export/kubevirt', async (req, res) => {
+  const session = driver.session();
+  try {
+    const vmResult = await session.run('MATCH (d:Device {type: "vm"}) RETURN d');
+    const vms = vmResult.records.map(r => r.get('d').properties);
+
+    const connResult = await session.run(
+      'MATCH (a:Device)-[r:CONNECTED_TO]->(b:Device) RETURN a.id AS from, b.id AS to, r.speed AS speed, r.unit AS unit'
+    );
+    const connections = connResult.records.map(r => ({
+      from: r.get('from'),
+      to: r.get('to'),
+      speed: `${r.get('speed')}${r.get('unit')}`
+    }));
+
+    const yamlData = generateKubeVirtBlueprint(vms, connections);
+    res.header('Content-Type', 'application/x-yaml');
+    res.send(yamlData);
+  } catch (error) {
+    console.error('Error exporting KubeVirt blueprint:', error);
     res.status(500).send(error);
   } finally {
     await session.close();

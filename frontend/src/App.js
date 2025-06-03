@@ -146,6 +146,21 @@ const App = () => {
     }
   };
 
+  const downloadYaml = async () => {
+    try {
+      const response = await axios.get('http://localhost:4000/export/kubevirt', { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'kubevirt-blueprint.yaml');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (error) {
+      console.error('Error downloading YAML', error);
+    }
+  };
+
   return (
     <div className="app">
       <h1>Design your infra here:</h1>
@@ -177,6 +192,7 @@ const App = () => {
         >
           Find Fastest Path
         </button>
+        <button onClick={downloadYaml}>Download YAML</button>
       </div>
       <div className="container">
         <div id="inventory" className="inventory">
