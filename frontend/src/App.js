@@ -5,24 +5,31 @@ import Switch from './components/Switch';
 import Router from './components/Router';
 import './App.css';
 
+// Configure axios defaults
+const API_BASE_URL = 'http://localhost:4000';
+axios.defaults.baseURL = API_BASE_URL;
+axios.defaults.timeout = 10000; // 10 second timeout
+
 const App = () => {
   const [droppedDevices, setDroppedDevices] = useState([]);
   const [deviceCounters, setDeviceCounters] = useState({ vm: 0, switch: 0, router: 0 });
   const [selectedDevice, setSelectedDevice] = useState(null);
   const [connections, setConnections] = useState([]);
-  const [fastestPath, setFastestPath] = useState([]);
-  const [startDevice, setStartDevice] = useState('');
-  const [endDevice, setEndDevice] = useState('');
+  const [exportStatus, setExportStatus] = useState('');
 
   useEffect(() => {
     const initializeData = async () => {
       try {
-        await axios.get('http://localhost:4000/clear-database');
-        console.log('Database cleared on app refresh');
-        const response = await axios.get('http://localhost:4000/connections');
-        setConnections(response.data);
+        console.log('🧹 Clearing database...');
+        await axios.get('/clear-database');
+        console.log('✅ Database cleared');
+        
+        console.log('📋 Loading connections...');
+        const response = await axios.get('/connections');
+        setConnections(response.data || []);
+        console.log('✅ Connections loaded:', response.data?.length || 0);
       } catch (error) {
-        console.error('Error initializing data', error);
+        console.error('❌ Error initializing data:', error);
       }
     };
 
@@ -31,10 +38,11 @@ const App = () => {
 
   const createDevice = async (device) => {
     try {
-      const response = await axios.post('http://localhost:4000/devices', device);
-      console.log('Device created:', response.data);
+      console.log('📝 Creating device:', device);
+      const response = await axios.post('/devices', device);
+      console.log('✅ Device created:', response.data);
     } catch (error) {
-      console.error('Error creating device:', error);
+      console.error('❌ Error creating device:', error);
     }
   };
 
@@ -57,8 +65,8 @@ const App = () => {
       setConnections((prevConnections) =>
         prevConnections.filter((connection) => connection.from !== deviceId && connection.to !== deviceId)
       );
-      axios.post('http://localhost:4000/devices/delete', { deviceId }).catch((error) => {
-        console.error('Error deleting device', error);
+      axios.post('/devices/delete', { deviceId }).catch((error) => {
+        console.error('❌ Error deleting device:', error);
       });
       return;
     }
@@ -98,37 +106,37 @@ const App = () => {
       const toDevice = droppedDevices.find((device) => device.id === deviceId);
 
       if (!fromDevice || !toDevice) {
-        console.error('Device not found.');
+        console.error('❌ Device not found.');
         return;
       }
 
       if (fromDevice.type === 'vm' && toDevice.type === 'vm') {
-        console.log('Connecting VM with VM is prohibited.');
+        alert('❌ Connecting VM with VM is prohibited.');
         return;
       }
 
       const speed = prompt("Enter network speed for this connection (e.g., '1 Gbps'):", '1 Gbps');
       if (!speed) {
-        console.log('Connection speed is required. Connection not created.');
+        console.log('⚠️ Connection speed is required. Connection not created.');
         return;
       }
 
       const speedPattern = /^[0-9]+(\.[0-9]+)?\s*(Gbps|Mbps)$/;
       if (!speedPattern.test(speed)) {
-        console.log('Invalid speed format. Connection not created.');
+        alert('❌ Invalid speed format. Use format like "1 Gbps" or "100 Mbps"');
         return;
       }
 
       const newConnection = { from: selectedDevice, to: deviceId, speed };
-      console.log('Creating connection:', newConnection);
+      console.log('🔗 Creating connection:', newConnection);
 
       setConnections((prevConnections) => [...prevConnections, newConnection]);
-      axios.post('http://localhost:4000/connections', newConnection)
+      axios.post('/connections', newConnection)
         .then((response) => {
-          console.log('Connection saved:', response.data);
+          console.log('✅ Connection saved:', response.data);
         })
         .catch((error) => {
-          console.error('Error saving connection:', error);
+          console.error('❌ Error saving connection:', error);
         });
 
       setSelectedDevice(null);
@@ -137,70 +145,115 @@ const App = () => {
     }
   };
 
-  const findFastestPath = async (fromId, toId) => {
+  const exportToKubeVirt = async () => {
+    if (droppedDevices.length === 0) {
+      alert('❌ No devices to export. Please add some devices first.');
+      return;
+    }
+
     try {
-      const response = await axios.get(`http://localhost:4000/devices/fastest-path/${fromId}/${toId}`);
-      setFastestPath(response.data.path);
+      setExportStatus('⏳ Generating KubeVirt configuration...');
+      console.log('📦 Exporting to KubeVirt...');
+      
+      const response = await axios.get('/export/kubevirt', {
+        responseType: 'blob' // Important for file download
+      });
+      
+      // Create blob link to download the YAML file
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'kubevirt-infrastructure.yaml');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      setExportStatus('✅ KubeVirt configuration exported successfully!');
+      console.log('✅ Export successful');
+      setTimeout(() => setExportStatus(''), 3000);
     } catch (error) {
-      console.error('Error finding fastest path', error);
+      console.error('❌ Error exporting to KubeVirt:', error);
+      setExportStatus('❌ Error exporting configuration. Please try again.');
+      setTimeout(() => setExportStatus(''), 5000);
+    }
+  };
+
+  const clearInfrastructure = async () => {
+    if (window.confirm('🗑️ Are you sure you want to clear all devices and connections?')) {
+      try {
+        console.log('🧹 Clearing infrastructure...');
+        await axios.get('/clear-database');
+        setDroppedDevices([]);
+        setConnections([]);
+        setDeviceCounters({ vm: 0, switch: 0, router: 0 });
+        setSelectedDevice(null);
+        console.log('✅ Infrastructure cleared');
+      } catch (error) {
+        console.error('❌ Error clearing infrastructure:', error);
+      }
     }
   };
 
   return (
     <div className="app">
       <h1>Design your infra here:</h1>
-      <div className="path-selection">
-        <label>
-          Start Device:
-          <select onChange={(e) => setStartDevice(e.target.value)} value={startDevice}>
-            <option value="">Select a device</option>
-            {droppedDevices.map((device) => (
-              <option key={device.id} value={device.id}>{device.id}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          End Device:
-          <select onChange={(e) => setEndDevice(e.target.value)} value={endDevice}>
-            <option value="">Select a device</option>
-            {droppedDevices.map((device) => (
-              <option key={device.id} value={device.id}>{device.id}</option>
-            ))}
-          </select>
-        </label>
-        <button
-          onClick={() => {
-            if (startDevice && endDevice) {
-              findFastestPath(startDevice, endDevice);
-            }
-          }}
-        >
-          Find Fastest Path
-        </button>
+      
+      <div className="controls">
+        <div className="export-controls">
+          <button 
+            className="export-button" 
+            onClick={exportToKubeVirt}
+            disabled={droppedDevices.length === 0}
+            title="Export infrastructure to KubeVirt YAML"
+          >
+            📦 Export to KubeVirt
+          </button>
+          <button 
+            className="clear-button" 
+            onClick={clearInfrastructure}
+            title="Clear all devices and connections"
+          >
+            🗑️ Clear All
+          </button>
+          {exportStatus && (
+            <div className={`export-status ${exportStatus.includes('❌') ? 'error' : 'success'}`}>
+              {exportStatus}
+            </div>
+          )}
+        </div>
       </div>
+
       <div className="container">
         <div id="inventory" className="inventory">
           <h2>Inventory</h2>
           <div className="device-container">
             <VM onDragStart={(e) => handleDragStart(e, 'vm')} isInInventory={true} />
+            <span className="device-label">Virtual Machine</span>
           </div>
           <div className="device-container">
             <Switch onDragStart={(e) => handleDragStart(e, 'switch')} isInInventory={true} />
+            <span className="device-label">Network Switch</span>
           </div>
           <div className="device-container">
             <Router onDragStart={(e) => handleDragStart(e, 'router')} isInInventory={true} />
+            <span className="device-label">Network Router</span>
+          </div>
+          
+          <div className="inventory-info">
+            <h3>Statistics</h3>
+            <p>VMs: {droppedDevices.filter(d => d.type === 'vm').length}</p>
+            <p>Switches: {droppedDevices.filter(d => d.type === 'switch').length}</p>
+            <p>Routers: {droppedDevices.filter(d => d.type === 'router').length}</p>
+            <p>Connections: {connections.length}</p>
           </div>
         </div>
+        
         <div className="bigger-box" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
           <svg className="connections">
             {connections.map((connection, index) => {
               const fromDevice = droppedDevices.find((device) => device.id === connection.from);
               const toDevice = droppedDevices.find((device) => device.id === connection.to);
-              const isFastestPath = fastestPath.some(
-                (segment) =>
-                  (segment.from.id === connection.from && segment.to.id === connection.to) ||
-                  (segment.from.id === connection.to && segment.to.id === connection.from)
-              );
               return (
                 fromDevice &&
                 toDevice && (
@@ -210,13 +263,15 @@ const App = () => {
                       y1={fromDevice.position.y + 40}
                       x2={toDevice.position.x + 40}
                       y2={toDevice.position.y + 40}
-                      stroke={isFastestPath ? 'blue' : 'white'}
-                      strokeWidth={isFastestPath ? 3 : 1}
+                      stroke="#ffffff"
+                      strokeWidth={1}
                     />
                     <text
-                      x={(fromDevice.position.x + toDevice.position.x) / 2}
-                      y={(fromDevice.position.y + toDevice.position.y) / 2}
-                      fill={isFastestPath ? 'blue' : 'red'}
+                      x={(fromDevice.position.x + toDevice.position.x) / 2 + 40}
+                      y={(fromDevice.position.y + toDevice.position.y) / 2 + 40}
+                      fill="#ffff00"
+                      fontSize="12"
+                      textAnchor="middle"
                     >
                       {connection.speed}
                     </text>
@@ -225,6 +280,7 @@ const App = () => {
               );
             })}
           </svg>
+          
           {droppedDevices.map((device) => (
             <div
               key={device.id}
@@ -233,6 +289,8 @@ const App = () => {
                 left: device.position.x,
                 top: device.position.y,
                 cursor: 'pointer',
+                border: selectedDevice === device.id ? '2px solid #00d8ff' : '2px solid transparent',
+                borderRadius: '50%',
               }}
               draggable
               onDragStart={(e) => handleDragStart(e, device.type, device.id)}
@@ -245,9 +303,22 @@ const App = () => {
               {device.type === 'router' && <Router id={device.id} isInInventory={false} />}
             </div>
           ))}
+          
           <div id="bin" className="bin">
-            🗑️ Bin
+            🗑️
           </div>
+          
+          {droppedDevices.length === 0 && (
+            <div className="empty-canvas">
+              <h2>🚀 Start Building Your Infrastructure</h2>
+              <p>Drag devices from the inventory to get started</p>
+              <ul>
+                <li>🖱️ Drag & drop devices from the left panel</li>
+                <li>🔗 Click devices to create connections</li>
+                <li>📦 Export to KubeVirt when ready</li>
+              </ul>
+            </div>
+          )}
         </div>
       </div>
     </div>
