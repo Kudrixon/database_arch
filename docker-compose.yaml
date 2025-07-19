@@ -7,7 +7,13 @@ services:
       dockerfile: Dockerfile
     ports:
       - "4000:4000"
-  
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    command: npm run start
+
   frontend:
     build:
       context: ./frontend
@@ -16,4 +22,8 @@ services:
       - "3000:3000"
     depends_on:
       - backend
-
+    environment:
+      - REACT_APP_BACKEND_URL=http://localhost:4000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
