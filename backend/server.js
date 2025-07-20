@@ -220,6 +220,7 @@ app.get('/connections', (req, res) => {
 });
 
 // KubeVirt Export Endpoint
+// Enhanced KubeVirt Export with CDI monitoring instructions
 app.get('/export/kubevirt', (req, res) => {
   console.log('📦 Exporting to KubeVirt...');
   console.log(`📊 Current state: ${devices.length} devices, ${connections.length} connections`);
@@ -241,6 +242,166 @@ app.get('/export/kubevirt', (req, res) => {
     res.status(500).json({ error: `Failed to export KubeVirt configuration: ${error.message}` });
   }
 });
+
+// Export PVCs only (first step)
+app.get('/export/kubevirt-pvcs', (req, res) => {
+  console.log('📦 Exporting KubeVirt PVCs...');
+  console.log(`📊 Current state: ${devices.length} devices, ${connections.length} connections`);
+  
+  try {
+    if (devices.length === 0) {
+      return res.status(400).json({ error: 'No devices to export. Please add some devices first.' });
+    }
+    
+    const kubevirtYaml = generatePVCsOnly(devices, connections);
+    
+    res.setHeader('Content-Type', 'application/x-yaml');
+    res.setHeader('Content-Disposition', 'attachment; filename="kubevirt-infrastructure-pvcs.yaml"');
+    
+    console.log('✅ KubeVirt PVCs YAML generated successfully');
+    res.send(kubevirtYaml);
+  } catch (error) {
+    console.error('❌ Error exporting KubeVirt PVCs:', error);
+    res.status(500).json({ error: `Failed to export KubeVirt PVCs: ${error.message}` });
+  }
+});
+
+// Export VMs only (second step)
+app.get('/export/kubevirt-vms', (req, res) => {
+  console.log('📦 Exporting KubeVirt VMs...');
+  console.log(`📊 Current state: ${devices.length} devices, ${connections.length} connections`);
+  
+  try {
+    if (devices.length === 0) {
+      return res.status(400).json({ error: 'No devices to export. Please add some devices first.' });
+    }
+    
+    const kubevirtYaml = generateVMsOnly(devices, connections);
+    
+    res.setHeader('Content-Type', 'application/x-yaml');
+    res.setHeader('Content-Disposition', 'attachment; filename="kubevirt-infrastructure-vms.yaml"');
+    
+    console.log('✅ KubeVirt VMs YAML generated successfully');
+    res.send(kubevirtYaml);
+  } catch (error) {
+    console.error('❌ Error exporting KubeVirt VMs:', error);
+    res.status(500).json({ error: `Failed to export KubeVirt VMs: ${error.message}` });
+  }
+});
+
+// Export deployment script
+app.get('/export/deploy-script', (req, res) => {
+  console.log('📝 Generating deployment script...');
+  
+  try {
+    if (devices.length === 0) {
+      return res.status(400).json({ error: 'No devices to export. Please add some devices first.' });
+    }
+    
+    const deployScript = generateDeploymentScript(devices);
+    
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', 'attachment; filename="deploy.sh"');
+    
+    console.log('✅ Deployment script generated successfully');
+    res.send(deployScript);
+  } catch (error) {
+    console.error('❌ Error generating deployment script:', error);
+    res.status(500).json({ error: `Failed to generate deployment script: ${error.message}` });
+  }
+});
+
+// Export monitoring commands
+app.get('/export/monitoring-commands', (req, res) => {
+  try {
+    const vms = devices.filter(d => ['vm', 'router', 'switch'].includes(d.type));
+    
+    const commands = {
+      checkAllPVCs: 'kubectl get pvc',
+      checkImportStatus: vms.map(device => ({
+        vm: device.id,
+        command: `kubectl get pvc ${device.id.toLowerCase()}-pvc -o jsonpath='{.metadata.annotations.cdi\\.kubevirt\\.io/storage\\.pod\\.phase}'`
+      })),
+      checkImportLogs: vms.map(device => ({
+        vm: device.id,
+        command: `kubectl logs -l cdi.kubevirt.io/storage.import.importPvcName=${device.id.toLowerCase()}-pvc -n cdi`
+      })),
+      accessConsole: vms.map(device => ({
+        vm: device.id,
+        command: `virtctl console ${device.id.toLowerCase()}`
+      })),
+      monitoringScript: generateMonitoringScript(vms)
+    };
+    
+    res.json(commands);
+  } catch (error) {
+    console.error('❌ Error generating monitoring commands:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Generate a bash monitoring script
+function generateMonitoringScript(vms) {
+  return `#!/bin/bash
+# KubeVirt Infrastructure Monitoring Script
+# Generated: ${new Date().toISOString()}
+
+echo "🔍 Monitoring KubeVirt Infrastructure Import Status"
+echo "=================================================="
+
+# Check if kubectl is available
+if ! command -v kubectl &> /dev/null; then
+    echo "❌ kubectl not found. Please install kubectl first."
+    exit 1
+fi
+
+# Check if virtctl is available
+if ! command -v virtctl &> /dev/null; then
+    echo "⚠️  virtctl not found. Console access will not be available."
+fi
+
+echo ""
+echo "📋 Checking PVC Status:"
+kubectl get pvc
+
+echo ""
+echo "🔄 Checking CDI Import Status for each VM:"
+${vms.map(vm => `
+echo "  VM: ${vm.id}"
+STATUS=$(kubectl get pvc ${vm.id.toLowerCase()}-pvc -o jsonpath='{.metadata.annotations.cdi\\.kubevirt\\.io/storage\\.pod\\.phase}' 2>/dev/null)
+if [ "$STATUS" = "Succeeded" ]; then
+    echo "    ✅ Import Status: $STATUS"
+else
+    echo "    ⏳ Import Status: $STATUS (waiting for Succeeded)"
+fi`).join('')}
+
+echo ""
+echo "🚀 Checking VM Status:"
+${vms.map(vm => `
+echo "  VM: ${vm.id}"
+kubectl get vm ${vm.id.toLowerCase()} 2>/dev/null || echo "    ❌ VM not found"
+kubectl get vmi ${vm.id.toLowerCase()} 2>/dev/null || echo "    ⏳ VMI not ready yet"`).join('')}
+
+echo ""
+echo "📝 Ready VMs for console access:"
+${vms.map(vm => `
+STATUS=$(kubectl get pvc ${vm.id.toLowerCase()}-pvc -o jsonpath='{.metadata.annotations.cdi\\.kubevirt\\.io/storage\\.pod\\.phase}' 2>/dev/null)
+VMI_STATUS=$(kubectl get vmi ${vm.id.toLowerCase()} -o jsonpath='{.status.phase}' 2>/dev/null)
+if [ "$STATUS" = "Succeeded" ] && [ "$VMI_STATUS" = "Running" ]; then
+    echo "  ✅ ${vm.id}: virtctl console ${vm.id.toLowerCase()}"
+else
+    echo "  ⏳ ${vm.id}: Not ready yet (Import: $STATUS, VMI: $VMI_STATUS)"
+fi`).join('')}
+
+echo ""
+echo "🔑 Login credentials for all VMs:"
+echo "  - root:myrootpassword"
+echo "  - debian:userpassword"
+echo ""
+echo "💡 Run this script periodically to monitor import progress:"
+echo "   watch -n 30 $0"
+`;
+}
 
 // Network topology analysis
 app.get('/network-topology', (req, res) => {
@@ -268,49 +429,560 @@ app.get('/network-topology', (req, res) => {
   }
 });
 
-// KubeVirt YAML Generation Functions
+// Updated KubeVirt YAML Generation with separated PVCs and VMs
 function generateKubeVirtInfrastructure(devices, connections) {
   const components = [];
   
-  // Add header comment
+  // Add header comment with deployment strategy
   components.push(`# KubeVirt Infrastructure Configuration
 # Generated from Infrastructure Designer
 # Date: ${new Date().toISOString()}
 # Devices: ${devices.length} | Connections: ${connections.length}
 #
-# This configuration includes:
-# - Network Attachments for different network segments
-# - Virtual Machines with proper networking
-# - Router and Switch configurations
-# - All necessary PVCs for VM storage
+# DEPLOYMENT STRATEGY:
+# ===================
+# 1. First apply PVCs (this file ends with -pvcs.yaml)
+# 2. Monitor CDI import progress until all show "Succeeded"
+# 3. Then apply VMs (separate file ends with -vms.yaml)
+#
+# Split deployment commands:
+# kubectl apply -f kubevirt-infrastructure-pvcs.yaml
+# # Wait for imports to complete, then:
+# kubectl apply -f kubevirt-infrastructure-vms.yaml
 #`);
   
   // Generate network attachments first
   components.push(generateNetworkAttachments());
   
-  // Generate configurations for each device type
+  // Separate devices by type
   const routers = devices.filter(d => d.type === 'router');
   const switches = devices.filter(d => d.type === 'switch');
   const vms = devices.filter(d => d.type === 'vm');
   
   console.log(`📊 Generating: ${routers.length} routers, ${switches.length} switches, ${vms.length} VMs`);
   
-  // Routers first (they provide network services)
-  routers.forEach(router => {
-    components.push(generateRouterInfrastructure(router));
-  });
+  // Generate PVCs for all VM-like devices first
+  components.push('# ========================================');
+  components.push('# PVCs - Apply these first and wait for CDI import completion');
+  components.push('# ========================================');
   
-  // Then switches (they provide L2 connectivity)
-  switches.forEach(switch_ => {
-    components.push(generateSwitchInfrastructure(switch_));
-  });
-  
-  // Finally VMs (they consume network services)
   vms.forEach(vm => {
-    components.push(generateVMInfrastructure(vm));
+    components.push(generateVMPVC(vm));
+  });
+  
+  routers.forEach(router => {
+    components.push(generateRouterPVC(router));
+  });
+  
+  switches.forEach(switch_ => {
+    components.push(generateSwitchPVC(switch_));
+  });
+  
+  // Add monitoring section
+  components.push(generateMonitoringInstructions(devices));
+  
+  return components.join('\n---\n');
+}
+
+// Generate separate VMs file
+function generateVMsOnly(devices, connections) {
+  const components = [];
+  
+  components.push(`# KubeVirt Virtual Machines Configuration
+# Generated from Infrastructure Designer
+# Date: ${new Date().toISOString()}
+#
+# IMPORTANT: Only apply this after all PVCs show "Succeeded" status
+# Check with: kubectl get pvc
+#`);
+  
+  const routers = devices.filter(d => d.type === 'router');
+  const switches = devices.filter(d => d.type === 'switch');
+  const vms = devices.filter(d => d.type === 'vm');
+  
+  // Generate VMs only (no PVCs)
+  vms.forEach(vm => {
+    components.push(generateVMOnly(vm));
+  });
+  
+  routers.forEach(router => {
+    components.push(generateRouterVMOnly(router));
+  });
+  
+  switches.forEach(switch_ => {
+    components.push(generateSwitchVMOnly(switch_));
   });
   
   return components.join('\n---\n');
+}
+
+// Generate separate PVCs file
+function generatePVCsOnly(devices, connections) {
+  const components = [];
+  
+  // Add header comment
+  components.push(`# KubeVirt Infrastructure - PVCs Only
+# Generated from Infrastructure Designer
+# Date: ${new Date().toISOString()}
+# Devices: ${devices.length} | Connections: ${connections.length}
+#
+# This file contains only PVCs with CDI import configurations
+# Apply this first and wait for CDI import to complete before applying VMs
+#`);
+  
+  // Generate network attachments first
+  components.push(generateNetworkAttachments());
+  
+  // Generate only PVCs for each device type
+  const routers = devices.filter(d => d.type === 'router');
+  const switches = devices.filter(d => d.type === 'switch');
+  const vms = devices.filter(d => d.type === 'vm');
+  
+  console.log(`📊 Generating PVCs for: ${routers.length} routers, ${switches.length} switches, ${vms.length} VMs`);
+  
+  // Generate PVCs only
+  vms.forEach(vm => {
+    components.push(generateVMPVC(vm));
+  });
+  
+  routers.forEach(router => {
+    components.push(generateRouterPVC(router));
+  });
+  
+  switches.forEach(switch_ => {
+    components.push(generateSwitchPVC(switch_));
+  });
+  
+  return components.join('\n---\n');
+}
+
+// Generate deployment script
+function generateDeploymentScript(devices) {
+  const vms = devices.filter(d => ['vm', 'router', 'switch'].includes(d.type));
+  
+  return `#!/bin/bash
+# KubeVirt Infrastructure Deployment Script
+# Generated: ${new Date().toISOString()}
+
+set -e
+
+echo "🚀 Deploying KubeVirt Infrastructure"
+echo "====================================="
+
+# Check prerequisites
+if ! command -v kubectl &> /dev/null; then
+    echo "❌ kubectl not found. Please install kubectl first."
+    exit 1
+fi
+
+if ! command -v virtctl &> /dev/null; then
+    echo "⚠️  virtctl not found. Console access will not be available."
+fi
+
+# Step 1: Apply PVCs
+echo ""
+echo "📦 Step 1: Creating PVCs and starting CDI import..."
+kubectl apply -f kubevirt-infrastructure-pvcs.yaml
+
+# Step 2: Monitor import progress
+echo ""
+echo "⏳ Step 2: Monitoring CDI import progress..."
+echo "This may take several minutes depending on network speed and image size."
+
+READY=false
+TIMEOUT=1800  # 30 minutes timeout
+ELAPSED=0
+
+while [ "$READY" = false ] && [ $ELAPSED -lt $TIMEOUT ]; do
+    echo ""
+    echo "🔍 Checking PVC import status... ($ELAPSED/$TIMEOUT seconds)"
+    
+    ALL_SUCCEEDED=true
+    ${vms.map(device => {
+      const name = device.id.toLowerCase();
+      return `    
+    STATUS_${device.id.toUpperCase()}=$(kubectl get pvc ${name}-pvc -o jsonpath='{.metadata.annotations.cdi\\.kubevirt\\.io/storage\\.pod\\.phase}' 2>/dev/null || echo "NotFound")
+    echo "  ${device.id}: $STATUS_${device.id.toUpperCase()}"
+    if [ "$STATUS_${device.id.toUpperCase()}" != "Succeeded" ]; then
+        ALL_SUCCEEDED=false
+    fi`;
+    }).join('')}
+    
+    if [ "$ALL_SUCCEEDED" = true ]; then
+        READY=true
+        echo ""
+        echo "✅ All PVCs imported successfully!"
+    else
+        echo "⏳ Waiting for imports to complete..."
+        sleep 30
+        ELAPSED=$((ELAPSED + 30))
+    fi
+done
+
+if [ "$READY" = false ]; then
+    echo ""
+    echo "❌ Timeout waiting for PVC imports to complete."
+    echo "Check the import status manually and run VMs deployment when ready:"
+    echo "kubectl apply -f kubevirt-infrastructure-vms.yaml"
+    exit 1
+fi
+
+# Step 3: Deploy VMs
+echo ""
+echo "🚀 Step 3: Deploying Virtual Machines..."
+kubectl apply -f kubevirt-infrastructure-vms.yaml
+
+echo ""
+echo "⏳ Waiting for VMs to start..."
+sleep 10
+
+# Step 4: Show status
+echo ""
+echo "📊 Final Status:"
+kubectl get vm
+echo ""
+kubectl get vmi
+
+echo ""
+echo "✅ Deployment completed!"
+echo ""
+echo "🖥️  Access VM consoles when ready:"
+${vms.map(device => `echo "  virtctl console ${device.id.toLowerCase()}"`).join('\n')}
+echo ""
+echo "🔑 Login credentials:"
+echo "  - root:myrootpassword"
+echo "  - debian:userpassword"
+echo ""
+echo "📋 Monitor ongoing status:"
+echo "  kubectl get vm"
+echo "  kubectl get vmi"
+echo "  kubectl get pvc"
+`;
+}
+
+// PVC generation functions
+function generateVMPVC(vm) {
+  const vmName = vm.id.toLowerCase();
+  const storage = normalizeStorageQuantity(vm.storage);
+  
+  return `# PVC for VM: ${vm.id}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "${vmName}-pvc"
+  labels:
+    app: containerized-data-importer
+    device-type: vm
+    device-id: ${vm.id}
+  annotations:
+    cdi.kubevirt.io/storage.import.endpoint: "https://cdimage.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.raw"
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: ${storage}
+  storageClassName: nfs-client`;
+}
+
+function generateRouterPVC(router) {
+  const routerName = router.id.toLowerCase();
+  
+  return `# PVC for Router: ${router.id}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "${routerName}-pvc"
+  labels:
+    app: containerized-data-importer
+    device-type: router
+    device-id: ${router.id}
+  annotations:
+    cdi.kubevirt.io/storage.import.endpoint: "https://cdimage.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.raw"
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: nfs-client`;
+}
+
+function generateSwitchPVC(switch_) {
+  const switchName = switch_.id.toLowerCase();
+  
+  return `# PVC for Switch: ${switch_.id}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "${switchName}-pvc"
+  labels:
+    app: containerized-data-importer
+    device-type: switch
+    device-id: ${switch_.id}
+  annotations:
+    cdi.kubevirt.io/storage.import.endpoint: "https://cdimage.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.raw"
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 8Gi
+  storageClassName: nfs-client`;
+}
+
+// VM-only generation functions (no PVCs)
+function generateVMOnly(vm) {
+  const vmName = vm.id.toLowerCase();
+  const memory = vm.memory ? vm.memory.replace(/Gi|GB/i, 'G') : '2G';
+  const cpu = vm.cpu ? parseInt(vm.cpu.match(/\d+/)[0]) || 1 : 1;
+  
+  return `# VM: ${vm.id}
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: ${vmName}
+  labels:
+    kubevirt.io/os: linux
+    device-type: vm
+    device-id: ${vm.id}
+spec:
+  running: true
+  template:
+    spec:
+      domain:
+        cpu:
+          cores: ${cpu}
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: disk0
+          - cdrom:
+              bus: sata
+              readonly: true
+            name: cloudinitdisk
+        machine:
+          type: q35
+        resources:
+          requests:
+            memory: ${memory}
+      volumes:
+      - name: disk0
+        persistentVolumeClaim:
+          claimName: ${vmName}-pvc
+      - cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: ${vmName}
+            ssh_pwauth: true
+            disable_root: false
+            chpasswd:
+              list: |
+                root:myrootpassword
+                debian:userpassword
+              expire: False
+        name: cloudinitdisk`;
+}
+
+function generateRouterVMOnly(router) {
+  const routerName = router.id.toLowerCase();
+  
+  return `# Router VM: ${router.id}
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: ${routerName}
+  labels:
+    kubevirt.io/os: linux
+    device-type: router
+    device-id: ${router.id}
+spec:
+  running: true
+  template:
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: disk0
+          - cdrom:
+              bus: sata
+              readonly: true
+            name: cloudinitdisk
+          interfaces:
+          - name: default
+            masquerade: {}
+          - name: lan
+            bridge: {}
+          - name: wan
+            bridge: {}
+          - name: dmz
+            bridge: {}
+        machine:
+          type: q35
+        resources:
+          requests:
+            memory: 1Gi
+      networks:
+      - name: default
+        pod: {}
+      - name: lan
+        multus:
+          networkName: lan-network
+      - name: wan
+        multus:
+          networkName: wan-network
+      - name: dmz
+        multus:
+          networkName: dmz-network
+      volumes:
+      - name: disk0
+        persistentVolumeClaim:
+          claimName: ${routerName}-pvc
+      - cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: ${routerName}
+            ssh_pwauth: true
+            disable_root: false
+            chpasswd:
+              list: |
+                root:myrootpassword
+                debian:userpassword
+              expire: False
+            package_update: true
+            packages:
+              - frr
+              - iptables-persistent
+              - dnsmasq
+              - net-tools
+              - openssh-server
+            runcmd:
+              - echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+              - sysctl -p
+              - systemctl enable ssh
+              - systemctl start ssh
+        name: cloudinitdisk`;
+}
+
+function generateSwitchVMOnly(switch_) {
+  const switchName = switch_.id.toLowerCase();
+  
+  return `# Switch VM: ${switch_.id}
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: ${switchName}
+  labels:
+    kubevirt.io/os: linux
+    device-type: switch
+    device-id: ${switch_.id}
+spec:
+  running: true
+  template:
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: disk0
+          - cdrom:
+              bus: sata
+              readonly: true
+            name: cloudinitdisk
+          interfaces:
+          - name: default
+            masquerade: {}
+          - name: uplink
+            bridge: {}
+          - name: port1
+            bridge: {}
+          - name: port2
+            bridge: {}
+        machine:
+          type: q35
+        resources:
+          requests:
+            memory: 1Gi
+      networks:
+      - name: default
+        pod: {}
+      - name: uplink
+        multus:
+          networkName: lan-network
+      - name: port1
+        multus:
+          networkName: vlan10-network
+      - name: port2
+        multus:
+          networkName: vlan20-network
+      volumes:
+      - name: disk0
+        persistentVolumeClaim:
+          claimName: ${switchName}-pvc
+      - cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            hostname: ${switchName}
+            ssh_pwauth: true
+            disable_root: false
+            chpasswd:
+              list: |
+                root:myrootpassword
+                debian:userpassword
+              expire: False
+            package_update: true
+            packages:
+              - openvswitch-switch
+              - openvswitch-common
+              - bridge-utils
+              - net-tools
+              - openssh-server
+            runcmd:
+              - systemctl enable openvswitch-switch
+              - systemctl start openvswitch-switch
+              - systemctl enable ssh
+              - systemctl start ssh
+        name: cloudinitdisk`;
+}
+
+function generateMonitoringInstructions(devices) {
+  const vms = devices.filter(d => ['vm', 'router', 'switch'].includes(d.type));
+  
+  return `
+# ========================================
+# MONITORING INSTRUCTIONS
+# ========================================
+#
+# 1. Apply PVCs first:
+#    kubectl apply -f kubevirt-infrastructure-pvcs.yaml
+#
+# 2. Monitor CDI import progress:
+#    kubectl get pvc
+#
+# 3. Check individual PVC status:
+${vms.map(device => 
+`#    kubectl get pvc ${device.id.toLowerCase()}-pvc -o jsonpath='{.metadata.annotations.cdi\\.kubevirt\\.io/storage\\.pod\\.phase}'`
+).join('\n')}
+#
+# 4. Wait for ALL PVCs to show "Succeeded" status
+#
+# 5. Apply VMs:
+#    kubectl apply -f kubevirt-infrastructure-vms.yaml
+#
+# 6. Access consoles when VMs are running:
+${vms.map(device => 
+`#    virtctl console ${device.id.toLowerCase()}`
+).join('\n')}
+#
+# Login credentials: root:myrootpassword or debian:userpassword`;
 }
 
 function generateNetworkAttachments() {
@@ -441,11 +1113,12 @@ spec:
   }'`;
 }
 
-// Exact replica of your working debian12 VM
+// Replace the generateVMInfrastructure function in your server.js with this:
+
 function generateVMInfrastructure(vm) {
   const vmName = vm.id.toLowerCase();
   const memory = vm.memory ? vm.memory.replace(/Gi|GB/i, 'G') : '2G';
-  const cpu = vm.cpu ? parseInt(vm.cpu.match(/\d+/)[0]) || 2 : 2;
+  const cpu = vm.cpu ? parseInt(vm.cpu.match(/\d+/)[0]) || 1 : 1;
   const storage = normalizeStorageQuantity(vm.storage);
   
   console.log(`📝 VM ${vm.id}: memory=${memory}, cpu=${cpu}, storage=${storage}`);
@@ -513,156 +1186,12 @@ spec:
         name: cloudinitdisk`;
 }
 
-function generateRouterInfrastructure(router) {
-  const routerName = router.id.toLowerCase();
-  
-  return `# Router: ${router.id}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: "${routerName}-pvc"
-  labels:
-    app: containerized-data-importer
-  annotations:
-    cdi.kubevirt.io/storage.import.endpoint: "https://cdimage.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.raw"
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 20Gi
-  storageClassName: nfs-client
-
----
-apiVersion: kubevirt.io/v1
-kind: VirtualMachine
-metadata:
-  name: ${routerName}
-  labels:
-    kubevirt.io/os: linux
-spec:
-  running: true
-  template:
-    spec:
-      domain:
-        cpu:
-          cores: 2
-        devices:
-          disks:
-          - disk:
-              bus: virtio
-            name: disk0
-          - cdrom:
-              bus: sata
-              readonly: true
-            name: cloudinitdisk
-        machine:
-          type: q35
-        resources:
-          requests:
-            memory: 4G
-      volumes:
-      - name: disk0
-        persistentVolumeClaim:
-          claimName: ${routerName}-pvc
-      - cloudInitNoCloud:
-          userData: |
-            #cloud-config
-            hostname: ${routerName}
-            ssh_pwauth: true
-            disable_root: false
-            chpasswd:
-              list: |
-                root:myrootpassword
-                debian:userpassword
-              expire: False
-            package_update: true
-            packages:
-              - frr
-              - iptables-persistent
-              - dnsmasq
-            runcmd:
-              - echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
-              - sysctl -p
-        name: cloudinitdisk`;
-}
-
-function generateSwitchInfrastructure(switch_) {
-  const switchName = switch_.id.toLowerCase();
-  
-  return `# Switch: ${switch_.id}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: "${switchName}-pvc"
-  labels:
-    app: containerized-data-importer
-  annotations:
-    cdi.kubevirt.io/storage.import.endpoint: "https://cdimage.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.raw"
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 15Gi
-  storageClassName: nfs-client
-
----
-apiVersion: kubevirt.io/v1
-kind: VirtualMachine
-metadata:
-  name: ${switchName}
-  labels:
-    kubevirt.io/os: linux
-spec:
-  running: true
-  template:
-    spec:
-      domain:
-        cpu:
-          cores: 2
-        devices:
-          disks:
-          - disk:
-              bus: virtio
-            name: disk0
-          - cdrom:
-              bus: sata
-              readonly: true
-            name: cloudinitdisk
-        machine:
-          type: q35
-        resources:
-          requests:
-            memory: 4G
-      volumes:
-      - name: disk0
-        persistentVolumeClaim:
-          claimName: ${switchName}-pvc
-      - cloudInitNoCloud:
-          userData: |
-            #cloud-config
-            hostname: ${switchName}
-            ssh_pwauth: true
-            disable_root: false
-            chpasswd:
-              list: |
-                root:myrootpassword
-                debian:userpassword
-              expire: False
-            package_update: true
-            packages:
-              - openvswitch-switch
-            runcmd:
-              - systemctl enable openvswitch-switch
-              - systemctl start openvswitch-switch
-        name: cloudinitdisk`;
-}
-
+// Also update the normalizeStorageQuantity function to ensure proper defaults:
 function normalizeStorageQuantity(storage) {
-  if (!storage) return '10Gi';
+  if (!storage) return '10Gi'; // Changed from 20Gi to 10Gi
   const cleaned = storage.toString().trim().replace(/\s+/g, '');
   
+  // Convert common formats to Kubernetes format
   return cleaned
     .replace(/(\d+)GB?$/i, '$1Gi')
     .replace(/(\d+)MB?$/i, '$1Mi')
@@ -683,105 +1212,13 @@ metadata:
   labels:
     app: containerized-data-importer
   annotations:
-    cdi.kubevirt.io/storage.import.endpoint: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    cdi.kubevirt.io/storage.import.endpoint: "https://cdimage.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.raw"
 spec:
   accessModes:
   - ReadWriteOnce
   resources:
     requests:
-      storage: 6Gi
-  storageClassName: nfs-client
-
----
-apiVersion: kubevirt.io/v1
-kind: VirtualMachine
-metadata:
-  name: ${routerName}
-  labels:
-    app: ${routerName}
-spec:
-  runStrategy: Always
-  template:
-    metadata:
-      labels:
-        kubevirt.io/vm: ${routerName}
-    spec:
-      domain:
-        devices:
-          disks:
-          - name: containerdisk
-            disk:
-              bus: virtio
-          - name: cloudinitdisk
-            disk:
-              bus: virtio
-          interfaces:
-          - name: default
-            masquerade: {}
-          - name: lan
-            bridge: {}
-          - name: wan
-            bridge: {}
-          - name: dmz
-            bridge: {}
-        machine:
-          type: pc-q35-rhel8.6.0
-        resources:
-          requests:
-            memory: 2Gi
-            cpu: 1
-      networks:
-      - name: default
-        pod: {}
-      - name: lan
-        multus:
-          networkName: lan-network
-      - name: wan
-        multus:
-          networkName: wan-network
-      - name: dmz
-        multus:
-          networkName: dmz-network
-      volumes:
-      - name: containerdisk
-        persistentVolumeClaim:
-          claimName: ${routerName}-pvc
-      - name: cloudinitdisk
-        cloudInitNoCloud:
-          userData: |
-            #cloud-config
-            hostname: ${routerName}
-            users:
-              - name: ubuntu
-                sudo: ALL=(ALL) NOPASSWD:ALL
-                shell: /bin/bash
-            package_update: true
-            packages:
-              - frr
-              - iptables-persistent
-              - dnsmasq`;
-}
-
-
-
-function generateRouterInfrastructure(router) {
-  const routerName = router.id.toLowerCase();
-  
-  return `# Router: ${router.id}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: "${routerName}-pvc"
-  labels:
-    app: containerized-data-importer
-  annotations:
-    cdi.kubevirt.io/storage.import.endpoint: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 20Gi
+      storage: 10Gi
   storageClassName: nfs-client
 
 ---
@@ -797,7 +1234,7 @@ spec:
     spec:
       domain:
         cpu:
-          cores: 2
+          cores: 1
         devices:
           disks:
           - disk:
@@ -820,7 +1257,7 @@ spec:
           type: q35
         resources:
           requests:
-            memory: 4Gi
+            memory: 1Gi
       networks:
       - name: default
         pod: {}
@@ -845,13 +1282,9 @@ spec:
             disable_root: false
             chpasswd:
               list: |
-                root:rootpassword
-                ubuntu:ubuntu
+                root:myrootpassword
+                debian:userpassword
               expire: False
-            users:
-              - name: ubuntu
-                sudo: ALL=(ALL) NOPASSWD:ALL
-                shell: /bin/bash
             package_update: true
             packages:
               - frr
@@ -878,13 +1311,13 @@ metadata:
   labels:
     app: containerized-data-importer
   annotations:
-    cdi.kubevirt.io/storage.import.endpoint: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    cdi.kubevirt.io/storage.import.endpoint: "https://cdimage.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.raw"
 spec:
   accessModes:
   - ReadWriteOnce
   resources:
     requests:
-      storage: 15Gi
+      storage: 8Gi
   storageClassName: nfs-client
 
 ---
@@ -900,7 +1333,7 @@ spec:
     spec:
       domain:
         cpu:
-          cores: 2
+          cores: 1
         devices:
           disks:
           - disk:
@@ -923,7 +1356,7 @@ spec:
           type: q35
         resources:
           requests:
-            memory: 4Gi
+            memory: 1Gi
       networks:
       - name: default
         pod: {}
@@ -948,13 +1381,9 @@ spec:
             disable_root: false
             chpasswd:
               list: |
-                root:rootpassword
-                ubuntu:ubuntu
+                root:myrootpassword
+                debian:userpassword
               expire: False
-            users:
-              - name: ubuntu
-                sudo: ALL=(ALL) NOPASSWD:ALL
-                shell: /bin/bash
             package_update: true
             packages:
               - openvswitch-switch
@@ -972,7 +1401,7 @@ spec:
 
 // Keep the storage normalization functions
 function normalizeStorageQuantity(storage) {
-  if (!storage) return '20Gi';
+  if (!storage) return '10Gi';
   const cleaned = storage.toString().trim().replace(/\s+/g, '');
   
   // Convert common formats to Kubernetes format
@@ -982,7 +1411,7 @@ function normalizeStorageQuantity(storage) {
     .replace(/(\d+)TB?$/i, '$1Ti')
     .replace(/(\d+)G$/i, '$1Gi')
     .replace(/(\d+)M$/i, '$1Mi')
-    .replace(/(\d+)T$/i, '$1Ti') || '20Gi';
+    .replace(/(\d+)T$/i, '$1Ti') || '10Gi';
 }
 
 function normalizeMemoryQuantity(memory) {
