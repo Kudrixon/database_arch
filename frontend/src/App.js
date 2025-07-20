@@ -80,9 +80,9 @@ const App = () => {
       let newDevice = { id: newId, type: deviceType, position: newPosition };
 
       if (deviceType === 'vm') {
-        const cpu = prompt('Enter CPU for this VM:', '4 vCPUs');
-        const memory = prompt('Enter Memory for this VM (e.g., 16GB):', '16GB');
-        const storage = prompt('Enter Storage for this VM (e.g., 256GB):', '256GB');
+        const cpu = prompt('Enter CPU for this VM:', '1 vCPU');
+        const memory = prompt('Enter Memory for this VM (e.g., 2GB):', '2GB');
+        const storage = prompt('Enter Storage for this VM (e.g., 10GB):', '10GB');
         newDevice = { ...newDevice, cpu, memory, storage };
       }
 
@@ -145,6 +145,7 @@ const App = () => {
     }
   };
 
+  // Enhanced export function with multi-step process
   const exportToKubeVirt = async () => {
     if (droppedDevices.length === 0) {
       alert('❌ No devices to export. Please add some devices first.');
@@ -156,7 +157,7 @@ const App = () => {
       console.log('📦 Exporting to KubeVirt...');
       
       const response = await axios.get('/export/kubevirt', {
-        responseType: 'blob' // Important for file download
+        responseType: 'blob'
       });
       
       // Create blob link to download the YAML file
@@ -175,6 +176,154 @@ const App = () => {
     } catch (error) {
       console.error('❌ Error exporting to KubeVirt:', error);
       setExportStatus('❌ Error exporting configuration. Please try again.');
+      setTimeout(() => setExportStatus(''), 5000);
+    }
+  };
+
+  // Export PVCs only (step 1)
+  const exportPVCs = async () => {
+    if (droppedDevices.length === 0) {
+      alert('❌ No devices to export. Please add some devices first.');
+      return;
+    }
+
+    try {
+      setExportStatus('⏳ Generating PVCs configuration...');
+      
+      const response = await axios.get('/export/kubevirt-pvcs', {
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'kubevirt-infrastructure-pvcs.yaml');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      setExportStatus('✅ PVCs exported! Apply this first, then wait for CDI import to complete.');
+      setTimeout(() => setExportStatus(''), 5000);
+    } catch (error) {
+      console.error('❌ Error exporting PVCs:', error);
+      setExportStatus('❌ Error exporting PVCs. Please try again.');
+      setTimeout(() => setExportStatus(''), 5000);
+    }
+  };
+
+  // Export VMs only (step 2)
+  const exportVMs = async () => {
+    if (droppedDevices.length === 0) {
+      alert('❌ No devices to export. Please add some devices first.');
+      return;
+    }
+
+    try {
+      setExportStatus('⏳ Generating VMs configuration...');
+      
+      const response = await axios.get('/export/kubevirt-vms', {
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'kubevirt-infrastructure-vms.yaml');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      setExportStatus('✅ VMs exported! Apply this after PVCs are ready.');
+      setTimeout(() => setExportStatus(''), 5000);
+    } catch (error) {
+      console.error('❌ Error exporting VMs:', error);
+      setExportStatus('❌ Error exporting VMs. Please try again.');
+      setTimeout(() => setExportStatus(''), 5000);
+    }
+  };
+
+  // Export deployment script
+  const exportDeployScript = async () => {
+    if (droppedDevices.length === 0) {
+      alert('❌ No devices to export. Please add some devices first.');
+      return;
+    }
+
+    try {
+      setExportStatus('⏳ Generating deployment script...');
+      
+      const response = await axios.get('/export/deploy-script', {
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'deploy.sh');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      setExportStatus('✅ Deployment script exported! Run: chmod +x deploy.sh && ./deploy.sh');
+      setTimeout(() => setExportStatus(''), 5000);
+    } catch (error) {
+      console.error('❌ Error exporting deployment script:', error);
+      setExportStatus('❌ Error exporting script. Please try again.');
+      setTimeout(() => setExportStatus(''), 5000);
+    }
+  };
+
+  // Get monitoring commands
+  const getMonitoringCommands = async () => {
+    if (droppedDevices.length === 0) {
+      alert('❌ No devices to export. Please add some devices first.');
+      return;
+    }
+
+    try {
+      setExportStatus('⏳ Generating monitoring commands...');
+      
+      const response = await axios.get('/export/monitoring-commands');
+      const commands = response.data;
+      
+      // Create a text file with monitoring commands
+      const monitoringText = `# KubeVirt Infrastructure Monitoring Commands
+# Generated: ${new Date().toISOString()}
+
+## Check all PVCs
+${commands.checkAllPVCs}
+
+## Check import status for each VM
+${commands.checkImportStatus.map(item => `# ${item.vm}:\n${item.command}`).join('\n\n')}
+
+## Check import logs if needed
+${commands.checkImportLogs.map(item => `# ${item.vm}:\n${item.command}`).join('\n\n')}
+
+## Access VM consoles (when ready)
+${commands.accessConsole.map(item => `# ${item.vm}:\n${item.command}`).join('\n\n')}
+
+## Monitoring Script
+${commands.monitoringScript}
+`;
+      
+      const blob = new Blob([monitoringText], { type: 'text/plain' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'kubevirt-monitoring-commands.txt');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      setExportStatus('📋 Monitoring commands downloaded!');
+      setTimeout(() => setExportStatus(''), 3000);
+    } catch (error) {
+      console.error('❌ Error getting monitoring commands:', error);
+      setExportStatus('❌ Error getting monitoring commands. Please try again.');
       setTimeout(() => setExportStatus(''), 5000);
     }
   };
@@ -205,9 +354,41 @@ const App = () => {
             className="export-button" 
             onClick={exportToKubeVirt}
             disabled={droppedDevices.length === 0}
-            title="Export infrastructure to KubeVirt YAML"
+            title="Export complete infrastructure as single YAML"
           >
-            📦 Export to KubeVirt
+            📦 Export Complete
+          </button>
+          <button 
+            className="export-button" 
+            onClick={exportPVCs}
+            disabled={droppedDevices.length === 0}
+            title="Export PVCs only (step 1)"
+          >
+            💾 Export PVCs
+          </button>
+          <button 
+            className="export-button" 
+            onClick={exportVMs}
+            disabled={droppedDevices.length === 0}
+            title="Export VMs only (step 2)"
+          >
+            🖥️ Export VMs
+          </button>
+          <button 
+            className="export-button" 
+            onClick={exportDeployScript}
+            disabled={droppedDevices.length === 0}
+            title="Export automated deployment script"
+          >
+            🚀 Export Deploy Script
+          </button>
+          <button 
+            className="export-button" 
+            onClick={getMonitoringCommands}
+            disabled={droppedDevices.length === 0}
+            title="Download monitoring commands and scripts"
+          >
+            📋 Get Monitoring Commands
           </button>
           <button 
             className="clear-button" 
