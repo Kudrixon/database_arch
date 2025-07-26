@@ -1,7 +1,7 @@
 import React from 'react';
 import './Device.css';
 
-const VM = ({ onDragStart, id, isInInventory, cpu, memory, storage }) => {
+const VM = ({ onDragStart, id, isInInventory, cpu, memory, storage, ip }) => {
   return (
     <div
       className="device vm"
@@ -17,6 +17,7 @@ const VM = ({ onDragStart, id, isInInventory, cpu, memory, storage }) => {
             <div>CPU: {cpu}</div>
             <div>Memory: {memory}</div>
             <div>Storage: {storage}</div>
+            {ip && <div>IP: {ip}</div>}
           </div>
         </>
       )}

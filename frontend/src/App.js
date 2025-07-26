@@ -43,6 +43,9 @@ const App = () => {
       console.log('✅ Device created:', response.data);
     } catch (error) {
       console.error('❌ Error creating device:', error);
+      if (error.response?.data?.error) {
+        alert(`Error: ${error.response.data.error}`);
+      }
     }
   };
 
@@ -83,7 +86,14 @@ const App = () => {
         const cpu = prompt('Enter CPU for this VM:', '1 vCPU');
         const memory = prompt('Enter Memory for this VM (e.g., 2GB):', '2GB');
         const storage = prompt('Enter Storage for this VM (e.g., 10GB):', '10GB');
-        newDevice = { ...newDevice, cpu, memory, storage };
+        const ip = prompt('Enter IP address for this VM (optional, e.g., 192.168.1.50):\nLeave empty for auto-assignment:', '');
+        newDevice = { ...newDevice, cpu, memory, storage, ip };
+      } else if (deviceType === 'router') {
+        const ip = prompt('Enter IP address for this Router (optional, e.g., 192.168.1.1):\nLeave empty for auto-assignment (192.168.1.1):', '');
+        newDevice = { ...newDevice, ip };
+      } else if (deviceType === 'switch') {
+        const ip = prompt('Enter IP address for this Switch (optional, e.g., 192.168.1.2):\nLeave empty for auto-assignment:', '');
+        newDevice = { ...newDevice, ip };
       }
 
       createDevice(newDevice);
@@ -244,90 +254,6 @@ const App = () => {
     }
   };
 
-  // Export deployment script
-  const exportDeployScript = async () => {
-    if (droppedDevices.length === 0) {
-      alert('❌ No devices to export. Please add some devices first.');
-      return;
-    }
-
-    try {
-      setExportStatus('⏳ Generating deployment script...');
-      
-      const response = await axios.get('/export/deploy-script', {
-        responseType: 'blob'
-      });
-      
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', 'deploy.sh');
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-      
-      setExportStatus('✅ Deployment script exported! Run: chmod +x deploy.sh && ./deploy.sh');
-      setTimeout(() => setExportStatus(''), 5000);
-    } catch (error) {
-      console.error('❌ Error exporting deployment script:', error);
-      setExportStatus('❌ Error exporting script. Please try again.');
-      setTimeout(() => setExportStatus(''), 5000);
-    }
-  };
-
-  // Get monitoring commands
-  const getMonitoringCommands = async () => {
-    if (droppedDevices.length === 0) {
-      alert('❌ No devices to export. Please add some devices first.');
-      return;
-    }
-
-    try {
-      setExportStatus('⏳ Generating monitoring commands...');
-      
-      const response = await axios.get('/export/monitoring-commands');
-      const commands = response.data;
-      
-      // Create a text file with monitoring commands
-      const monitoringText = `# KubeVirt Infrastructure Monitoring Commands
-# Generated: ${new Date().toISOString()}
-
-## Check all PVCs
-${commands.checkAllPVCs}
-
-## Check import status for each VM
-${commands.checkImportStatus.map(item => `# ${item.vm}:\n${item.command}`).join('\n\n')}
-
-## Check import logs if needed
-${commands.checkImportLogs.map(item => `# ${item.vm}:\n${item.command}`).join('\n\n')}
-
-## Access VM consoles (when ready)
-${commands.accessConsole.map(item => `# ${item.vm}:\n${item.command}`).join('\n\n')}
-
-## Monitoring Script
-${commands.monitoringScript}
-`;
-      
-      const blob = new Blob([monitoringText], { type: 'text/plain' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', 'kubevirt-monitoring-commands.txt');
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-      
-      setExportStatus('📋 Monitoring commands downloaded!');
-      setTimeout(() => setExportStatus(''), 3000);
-    } catch (error) {
-      console.error('❌ Error getting monitoring commands:', error);
-      setExportStatus('❌ Error getting monitoring commands. Please try again.');
-      setTimeout(() => setExportStatus(''), 5000);
-    }
-  };
-
   const clearInfrastructure = async () => {
     if (window.confirm('🗑️ Are you sure you want to clear all devices and connections?')) {
       try {
@@ -373,22 +299,6 @@ ${commands.monitoringScript}
             title="Export VMs only (step 2)"
           >
             🖥️ Export VMs
-          </button>
-          <button 
-            className="export-button" 
-            onClick={exportDeployScript}
-            disabled={droppedDevices.length === 0}
-            title="Export automated deployment script"
-          >
-            🚀 Export Deploy Script
-          </button>
-          <button 
-            className="export-button" 
-            onClick={getMonitoringCommands}
-            disabled={droppedDevices.length === 0}
-            title="Download monitoring commands and scripts"
-          >
-            📋 Get Monitoring Commands
           </button>
           <button 
             className="clear-button" 
@@ -478,10 +388,29 @@ ${commands.monitoringScript}
               onClick={() => handleSingleClick(device.id)}
             >
               {device.type === 'vm' && (
-                <VM id={device.id} isInInventory={false} cpu={device.cpu} memory={device.memory} storage={device.storage} />
+                <VM 
+                  id={device.id} 
+                  isInInventory={false} 
+                  cpu={device.cpu} 
+                  memory={device.memory} 
+                  storage={device.storage}
+                  ip={device.ip}
+                />
               )}
-              {device.type === 'switch' && <Switch id={device.id} isInInventory={false} />}
-              {device.type === 'router' && <Router id={device.id} isInInventory={false} />}
+              {device.type === 'switch' && (
+                <Switch 
+                  id={device.id} 
+                  isInInventory={false}
+                  ip={device.ip}
+                />
+              )}
+              {device.type === 'router' && (
+                <Router 
+                  id={device.id} 
+                  isInInventory={false}
+                  ip={device.ip}
+                />
+              )}
             </div>
           ))}
           
@@ -496,6 +425,7 @@ ${commands.monitoringScript}
               <ul>
                 <li>🖱️ Drag & drop devices from the left panel</li>
                 <li>🔗 Click devices to create connections</li>
+                <li>🌐 Configure custom IP addresses</li>
                 <li>📦 Export to KubeVirt when ready</li>
               </ul>
             </div>

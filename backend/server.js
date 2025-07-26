@@ -15,6 +15,7 @@ app.use(bodyParser.json());
 // Simple in-memory storage
 let devices = [];
 let connections = [];
+let currentNetworkMode = 'single'; // Default network mode
 
 // Test endpoint to verify server is working
 app.get('/', (req, res) => {
@@ -25,7 +26,7 @@ app.get('/', (req, res) => {
       'GET / - This message',
       'GET /health - Health check',
       'GET /clear-database - Clear all data',
-      'POST /devices - Create device',
+      'POST /devices - Create device (supports ip parameter)',
       'GET /devices - List devices',
       'POST /devices/delete - Delete device',
       'POST /connections - Create connection',
@@ -101,7 +102,7 @@ app.get('/clear-database', (req, res) => {
 // Device endpoints
 app.post('/devices', (req, res) => {
   console.log('📝 Creating device:', req.body);
-  const { id, type, cpu, memory, storage } = req.body;
+  const { id, type, cpu, memory, storage, ip } = req.body;
   
   try {
     // Check if device already exists
@@ -110,7 +111,25 @@ app.post('/devices', (req, res) => {
       return res.status(400).json({ error: `Device with ID ${id} already exists` });
     }
 
-    const device = { id, type, cpu, memory, storage, createdAt: new Date().toISOString() };
+    // Validate IP address if provided
+    if (ip && ip.trim()) {
+      
+      // Check if IP is already assigned
+      const existingIP = devices.find(d => d.ip === ip.trim());
+      if (existingIP) {
+        return res.status(400).json({ error: `IP address ${ip.trim()} is already assigned to device ${existingIP.id}` });
+      }
+    }
+
+    const device = { 
+      id, 
+      type, 
+      cpu, 
+      memory, 
+      storage, 
+      ip: ip && ip.trim() ? ip.trim() : null,
+      createdAt: new Date().toISOString() 
+    };
     devices.push(device);
     console.log('✅ Device created:', device);
     res.json({ success: true, device });
@@ -223,12 +242,54 @@ app.get('/connections', (req, res) => {
   }
 });
 
-// Network topology analysis for KubeVirt
+// Network topology analysis for KubeVirt - Configurable Mode
 function analyzeKubeVirtTopology() {
   const networkSegments = new Map();
   const deviceNetworks = new Map();
   
-  // Analyze connections to create network segments
+  // Use the current network mode
+  switch (currentNetworkMode) {
+    case 'single':
+      return analyzeSingleNetworkTopology();
+    case 'device-type':
+      return analyzeDeviceTypeTopology();
+    case 'vlan':
+      return analyzeVLANTopology();
+    case 'connection-based':
+    default:
+      return analyzeConnectionBasedTopology();
+  }
+}
+
+// Single Network Mode - All devices on one network
+function analyzeSingleNetworkTopology() {
+  const networkSegments = new Map();
+  const deviceNetworks = new Map();
+  
+  if (devices.length > 0) {
+    const segmentName = 'net1';
+    const subnet = '192.168.1.0/24';
+    
+    networkSegments.set(segmentName, {
+      name: segmentName,
+      subnet: subnet,
+      devices: devices.map(d => d.id),
+      speed: '1 Gbps'
+    });
+    
+    devices.forEach(device => {
+      deviceNetworks.set(device.id, [segmentName]);
+    });
+  }
+  
+  return { networkSegments, deviceNetworks };
+}
+
+// Connection-Based Mode - Each connection creates a network segment
+function analyzeConnectionBasedTopology() {
+  const networkSegments = new Map();
+  const deviceNetworks = new Map();
+  
   let segmentCounter = 1;
   const processedConnections = new Set();
   
@@ -237,7 +298,7 @@ function analyzeKubeVirtTopology() {
     const reverseKey = `${connection.to}-${connection.from}`;
     
     if (!processedConnections.has(connectionKey) && !processedConnections.has(reverseKey)) {
-      const segmentName = `net${segmentCounter}`;  // Shorter names
+      const segmentName = `net${segmentCounter}`;
       const subnet = `192.168.${segmentCounter + 10}.0/24`;
       
       networkSegments.set(segmentName, {
@@ -247,7 +308,6 @@ function analyzeKubeVirtTopology() {
         speed: connection.originalSpeed
       });
       
-      // Map devices to their networks
       [connection.from, connection.to].forEach(deviceId => {
         if (!deviceNetworks.has(deviceId)) {
           deviceNetworks.set(deviceId, []);
@@ -264,39 +324,150 @@ function analyzeKubeVirtTopology() {
   return { networkSegments, deviceNetworks };
 }
 
-// Generate IP assignments for KubeVirt VMs
+// Device-Type Based Mode - Networks based on device types
+function analyzeDeviceTypeTopology() {
+  const networkSegments = new Map();
+  const deviceNetworks = new Map();
+  
+  const networks = {
+    'management': { subnet: '192.168.1.0/24', devices: [] },
+    'dmz': { subnet: '192.168.10.0/24', devices: [] },
+    'internal': { subnet: '192.168.100.0/24', devices: [] }
+  };
+  
+  devices.forEach(device => {
+    let networkType;
+    if (device.type === 'router') {
+      networkType = 'management';
+    } else if (device.type === 'switch') {
+      networkType = 'internal';
+    } else {
+      networkType = 'dmz';
+    }
+    
+    networks[networkType].devices.push(device.id);
+    deviceNetworks.set(device.id, [networkType]);
+  });
+  
+  Object.entries(networks).forEach(([name, config]) => {
+    if (config.devices.length > 0) {
+      networkSegments.set(name, {
+        name: name,
+        subnet: config.subnet,
+        devices: config.devices,
+        speed: '1 Gbps'
+      });
+    }
+  });
+  
+  return { networkSegments, deviceNetworks };
+}
+
+// VLAN-Based Mode - Connected devices form VLANs
+function analyzeVLANTopology() {
+  const networkSegments = new Map();
+  const deviceNetworks = new Map();
+  
+  const deviceGroups = new Map();
+  let vlanCounter = 10;
+  
+  devices.forEach(device => {
+    if (!deviceGroups.has(device.id)) {
+      const group = new Set([device.id]);
+      const queue = [device.id];
+      
+      while (queue.length > 0) {
+        const current = queue.shift();
+        connections.forEach(conn => {
+          if (conn.from === current && !group.has(conn.to)) {
+            group.add(conn.to);
+            queue.push(conn.to);
+          } else if (conn.to === current && !group.has(conn.from)) {
+            group.add(conn.from);
+            queue.push(conn.from);
+          }
+        });
+      }
+      
+      const vlanName = `vlan${vlanCounter}`;
+      const subnet = `192.168.${vlanCounter}.0/24`;
+      
+      networkSegments.set(vlanName, {
+        name: vlanName,
+        subnet: subnet,
+        devices: Array.from(group),
+        speed: '1 Gbps'
+      });
+      
+      group.forEach(deviceId => {
+        deviceGroups.set(deviceId, vlanName);
+        deviceNetworks.set(deviceId, [vlanName]);
+      });
+      
+      vlanCounter++;
+    }
+  });
+  
+  return { networkSegments, deviceNetworks };
+}
+
+// Generate IP assignments for KubeVirt VMs - Single Network Mode with Custom IPs
 function generateKubeVirtIPAssignments() {
   const { networkSegments, deviceNetworks } = analyzeKubeVirtTopology();
   const ipAssignments = new Map();
   
-  deviceNetworks.forEach((networks, deviceId) => {
-    const device = devices.find(d => d.id === deviceId);
-    const assignments = [];
+  // Track used IPs to avoid conflicts
+  const usedIPs = new Set();
+  const networkName = 'net1';
+  const baseNetwork = '192.168.1';
+  let autoIpCounter = 10;
+  
+  // First pass: assign custom IPs and track reserved IPs
+  devices.forEach(device => {
+    if (device.ip) {
+      usedIPs.add(device.ip);
+    }
+  });
+  
+  // Reserved IPs
+  usedIPs.add('192.168.1.1'); // Always reserve .1 for gateway
+  
+  devices.forEach(device => {
+    let ip;
     
-    networks.forEach((networkName, index) => {
-      const segment = networkSegments.get(networkName);
-      if (segment) {
-        const baseIP = segment.subnet.split('.')[2];
-        let ip;
-        
-        if (device.type === 'router') {
-          ip = `192.168.${baseIP}.1`; // Router gets .1
-        } else if (device.type === 'switch') {
-          ip = `192.168.${baseIP}.2`; // Switch gets .2
-        } else {
-          ip = `192.168.${baseIP}.${10 + index}`; // VMs get .10+
+    // Use custom IP if specified
+    if (device.ip) {
+      ip = device.ip;
+    } else {
+      // Auto-assign based on device type
+      if (device.type === 'router') {
+        ip = `${baseNetwork}.1`; // Router gets .1 (gateway)
+      } else if (device.type === 'switch') {
+        // Find next available IP starting from .2
+        while (usedIPs.has(`${baseNetwork}.${autoIpCounter}`) || autoIpCounter === 1) {
+          autoIpCounter++;
         }
-        
-        assignments.push({
-          network: networkName,
-          ip: ip,
-          subnet: segment.subnet,
-          gateway: `192.168.${baseIP}.1`
-        });
+        ip = `${baseNetwork}.${autoIpCounter}`;
+        autoIpCounter++;
+      } else {
+        // VMs get next available IP
+        while (usedIPs.has(`${baseNetwork}.${autoIpCounter}`) || autoIpCounter === 1) {
+          autoIpCounter++;
+        }
+        ip = `${baseNetwork}.${autoIpCounter}`;
+        autoIpCounter++;
       }
-    });
+      usedIPs.add(ip);
+    }
     
-    ipAssignments.set(deviceId, assignments);
+    const assignments = [{
+      network: networkName,
+      ip: ip,
+      subnet: `${baseNetwork}.0/24`,
+      gateway: `${baseNetwork}.1` // Router is always the gateway
+    }];
+    
+    ipAssignments.set(device.id, assignments);
   });
   
   return { ipAssignments, networkSegments };
@@ -826,11 +997,12 @@ function normalizeStorageQuantity(storage) {
 
 // Network topology analysis endpoint
 app.get('/network-topology', (req, res) => {
-  console.log('🌐 Analyzing KubeVirt network topology...');
+  console.log(`🌐 Analyzing KubeVirt network topology (mode: ${currentNetworkMode})...`);
   try {
     const { ipAssignments, networkSegments } = generateKubeVirtIPAssignments();
     
     const topology = {
+      networkMode: currentNetworkMode,
       devices: devices.map(device => ({
         ...device,
         networks: ipAssignments.get(device.id) || []
