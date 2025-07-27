@@ -49,6 +49,43 @@ const App = () => {
     }
   };
 
+  // Enhanced function to handle router interface IP assignment
+  const assignRouterInterfaceIP = async (routerId, targetDeviceId, targetDeviceType) => {
+    const router = droppedDevices.find(d => d.id === routerId);
+    if (!router || router.type !== 'router') return null;
+
+    // Get existing connections for this router to determine interface number
+    const routerConnections = connections.filter(
+      conn => conn.from === routerId || conn.to === routerId
+    );
+    const interfaceNumber = routerConnections.length + 1;
+
+    const prompt_text = `Router ${routerId} Interface ${interfaceNumber} IP Configuration
+
+This router is connecting to ${targetDeviceId} (${targetDeviceType}).
+Each router interface needs its own IP address in a different subnet.
+
+Examples:
+- Interface 1: 192.168.1.1/24 (for first connection)
+- Interface 2: 192.168.2.1/24 (for second connection)  
+- Interface 3: 10.0.1.1/24 (for third connection)
+
+Enter IP address for this interface (or leave empty for auto-assignment):`;
+
+    const routerIP = prompt(prompt_text, '');
+    
+    if (routerIP && routerIP.trim()) {
+      // Validate IP format
+      const ipPattern = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+      if (!ipPattern.test(routerIP.trim())) {
+        alert('❌ Invalid IP format. Use format like: 192.168.1.1');
+        return null;
+      }
+    }
+
+    return routerIP ? routerIP.trim() : null;
+  };
+
   const handleDrop = (e) => {
     e.preventDefault();
     const deviceType = e.dataTransfer.getData('device-type');
@@ -89,10 +126,12 @@ const App = () => {
         const ip = prompt('Enter IP address for this VM (optional, e.g., 192.168.1.50):\nLeave empty for auto-assignment:', '');
         newDevice = { ...newDevice, cpu, memory, storage, ip };
       } else if (deviceType === 'router') {
-        const ip = prompt('Enter IP address for this Router (optional, e.g., 192.168.1.1):\nLeave empty for auto-assignment (192.168.1.1):', '');
-        newDevice = { ...newDevice, ip };
+        // For routers, we'll collect interface IPs when connections are made
+        alert('🌐 Router created!\n\nNote: Router IP addresses will be configured per interface when you create connections.');
+        newDevice = { ...newDevice, interfaceIPs: {} }; // Store multiple IPs per interface
       } else if (deviceType === 'switch') {
-        const ip = prompt('Enter IP address for this Switch (optional, e.g., 192.168.1.2):\nLeave empty for auto-assignment:', '');
+        // Switches don't need multiple IPs - they bridge traffic
+        const ip = prompt('Enter management IP for this Switch (optional, e.g., 192.168.1.2):\nLeave empty for auto-assignment:', '');
         newDevice = { ...newDevice, ip };
       }
 
@@ -110,7 +149,7 @@ const App = () => {
     e.dataTransfer.setData('device-id', deviceId || '');
   };
 
-  const handleSingleClick = (deviceId) => {
+  const handleSingleClick = async (deviceId) => {
     if (selectedDevice && selectedDevice !== deviceId) {
       const fromDevice = droppedDevices.find((device) => device.id === selectedDevice);
       const toDevice = droppedDevices.find((device) => device.id === deviceId);
@@ -137,17 +176,69 @@ const App = () => {
         return;
       }
 
-      const newConnection = { from: selectedDevice, to: deviceId, speed };
+      // Handle router interface IP assignment
+      let routerInterfaceData = {};
+      
+      if (fromDevice.type === 'router') {
+        const routerIP = await assignRouterInterfaceIP(fromDevice.id, toDevice.id, toDevice.type);
+        if (routerIP) {
+          routerInterfaceData.fromRouterIP = routerIP;
+        }
+      }
+      
+      if (toDevice.type === 'router') {
+        const routerIP = await assignRouterInterfaceIP(toDevice.id, fromDevice.id, fromDevice.type);
+        if (routerIP) {
+          routerInterfaceData.toRouterIP = routerIP;
+        }
+      }
+
+      const newConnection = { 
+        from: selectedDevice, 
+        to: deviceId, 
+        speed,
+        ...routerInterfaceData // Include router interface IPs
+      };
       console.log('🔗 Creating connection:', newConnection);
 
       setConnections((prevConnections) => [...prevConnections, newConnection]);
-      axios.post('/connections', newConnection)
-        .then((response) => {
-          console.log('✅ Connection saved:', response.data);
-        })
-        .catch((error) => {
-          console.error('❌ Error saving connection:', error);
-        });
+      
+      try {
+        const response = await axios.post('/connections', newConnection);
+        console.log('✅ Connection saved:', response.data);
+        
+        // Update router interface IPs in the local state
+        if (routerInterfaceData.fromRouterIP || routerInterfaceData.toRouterIP) {
+          setDroppedDevices(prevDevices => 
+            prevDevices.map(device => {
+              if (device.id === fromDevice.id && routerInterfaceData.fromRouterIP) {
+                const updatedDevice = { ...device };
+                if (!updatedDevice.interfaceIPs) updatedDevice.interfaceIPs = {};
+                updatedDevice.interfaceIPs[`to_${toDevice.id}`] = routerInterfaceData.fromRouterIP;
+                return updatedDevice;
+              }
+              if (device.id === toDevice.id && routerInterfaceData.toRouterIP) {
+                const updatedDevice = { ...device };
+                if (!updatedDevice.interfaceIPs) updatedDevice.interfaceIPs = {};
+                updatedDevice.interfaceIPs[`to_${fromDevice.id}`] = routerInterfaceData.toRouterIP;
+                return updatedDevice;
+              }
+              return device;
+            })
+          );
+        }
+      } catch (error) {
+        console.error('❌ Error saving connection:', error);
+        if (error.response?.data?.error) {
+          alert(`Error: ${error.response.data.error}`);
+          // Remove the connection from local state if backend failed
+          setConnections(prevConnections => 
+            prevConnections.filter(conn => 
+              !(conn.from === selectedDevice && conn.to === deviceId)
+            )
+          );
+        }
+      }
 
       setSelectedDevice(null);
     } else {
@@ -408,7 +499,7 @@ const App = () => {
                 <Router 
                   id={device.id} 
                   isInInventory={false}
-                  ip={device.ip}
+                  interfaceIPs={device.interfaceIPs}
                 />
               )}
             </div>
@@ -426,6 +517,7 @@ const App = () => {
                 <li>🖱️ Drag & drop devices from the left panel</li>
                 <li>🔗 Click devices to create connections</li>
                 <li>🌐 Configure custom IP addresses</li>
+                <li>🌐 Routers get per-interface IP configuration</li>
                 <li>📦 Export to KubeVirt when ready</li>
               </ul>
             </div>
