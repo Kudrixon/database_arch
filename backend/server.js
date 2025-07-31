@@ -657,6 +657,7 @@ spec:
       "name": "${segmentName}",
       "type": "bridge",
       "bridge": "${bridgeName}",
+      "disableContainerInterface": false,
       "isDefaultGateway": false,
       "isGateway": false,
       "ipMasq": false,
@@ -698,7 +699,7 @@ spec:
   storageClassName: nfs-client`;
 }
 
-// Generate networked KubeVirt VM with multiple interfaces
+// Generate networked KubeVirt VM with multiple interfaces + Pod Affinity for same-node scheduling
 function generateNetworkedKubeVirtVM(device, ipAssignments, networkSegments) {
   // Add timestamp to VM name to avoid cloud-init caching
   const timestamp = new Date().toISOString().slice(0, 16).replace(/[:.T]/g, '').toLowerCase();
@@ -729,8 +730,26 @@ function generateNetworkedKubeVirtVM(device, ipAssignments, networkSegments) {
   if (cloudInitSize > 2048) {
     console.error(`❌ Cloud-init too large for ${device.id}: ${cloudInitSize} bytes`);
   }
+
+  // Determine if this is the first VM (anchor) or should follow others
+  // Sort devices to ensure consistent anchor selection
+  const allDevices = Array.from(ipAssignments.keys()).sort();
+  const isFirstVM = device.id === allDevices[0]; // First device alphabetically becomes anchor
   
-  return `# ${device.type.toUpperCase()}: ${device.id} with Multi-Interface Configuration (${assignments.length} interfaces)
+  // Generate pod affinity configuration for non-anchor VMs
+  let affinityConfig = '';
+  if (!isFirstVM) {
+    affinityConfig = `      # Pod Affinity: Must run on same node as other lab-cluster VMs
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                vm-group: lab-cluster
+            topologyKey: kubernetes.io/hostname`;
+  }
+  
+  return `# ${device.type.toUpperCase()}: ${device.id} with Multi-Interface Configuration (${assignments.length} interfaces)${isFirstVM ? ' - ANCHOR VM' : ' - FOLLOWS GROUP'}
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
@@ -741,6 +760,7 @@ metadata:
     device-id: ${device.id}
     deployment-version: "${timestamp}"
     interface-count: "${assignments.length}"
+    vm-group: lab-cluster
 spec:
   runStrategy: Always
   template:
@@ -748,7 +768,9 @@ spec:
       labels:
         deployment-id: "${timestamp}"
         network-interfaces: "${assignments.length}"
+        vm-group: lab-cluster
     spec:
+${affinityConfig}
       domain:
         cpu:
           cores: ${cpu}
