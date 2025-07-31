@@ -233,13 +233,6 @@ h1 {
     z-index: 1;
 }
 
-.connections text {
-    font-size: 12px;
-    font-weight: bold;
-    text-shadow: 1px 1px 2px #000000;
-    pointer-events: none;
-}
-
 /* Bin */
 .bin {
     position: absolute;

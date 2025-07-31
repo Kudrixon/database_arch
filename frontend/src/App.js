@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import VM from './components/VM';
-import Switch from './components/Switch';
 import Router from './components/Router';
 import './App.css';
 
@@ -12,7 +11,7 @@ axios.defaults.timeout = 10000; // 10 second timeout
 
 const App = () => {
   const [droppedDevices, setDroppedDevices] = useState([]);
-  const [deviceCounters, setDeviceCounters] = useState({ vm: 0, switch: 0, router: 0 });
+  const [deviceCounters, setDeviceCounters] = useState({ vm: 0, router: 0 });
   const [selectedDevice, setSelectedDevice] = useState(null);
   const [connections, setConnections] = useState([]);
   const [exportStatus, setExportStatus] = useState('');
@@ -126,13 +125,8 @@ Enter IP address for this interface (or leave empty for auto-assignment):`;
         const ip = prompt('Enter IP address for this VM (optional, e.g., 192.168.1.50):\nLeave empty for auto-assignment:', '');
         newDevice = { ...newDevice, cpu, memory, storage, ip };
       } else if (deviceType === 'router') {
-        // For routers, we'll collect interface IPs when connections are made
         alert('🌐 Router created!\n\nNote: Router IP addresses will be configured per interface when you create connections.');
         newDevice = { ...newDevice, interfaceIPs: {} }; // Store multiple IPs per interface
-      } else if (deviceType === 'switch') {
-        // Switches don't need multiple IPs - they bridge traffic
-        const ip = prompt('Enter management IP for this Switch (optional, e.g., 192.168.1.2):\nLeave empty for auto-assignment:', '');
-        newDevice = { ...newDevice, ip };
       }
 
       createDevice(newDevice);
@@ -155,7 +149,6 @@ Enter IP address for this interface (or leave empty for auto-assignment):`;
       const toDevice = droppedDevices.find((device) => device.id === deviceId);
 
       if (!fromDevice || !toDevice) {
-        console.error('❌ Device not found.');
         return;
       }
 
@@ -164,19 +157,6 @@ Enter IP address for this interface (or leave empty for auto-assignment):`;
         return;
       }
 
-      const speed = prompt("Enter network speed for this connection (e.g., '1 Gbps'):", '1 Gbps');
-      if (!speed) {
-        console.log('⚠️ Connection speed is required. Connection not created.');
-        return;
-      }
-
-      const speedPattern = /^[0-9]+(\.[0-9]+)?\s*(Gbps|Mbps)$/;
-      if (!speedPattern.test(speed)) {
-        alert('❌ Invalid speed format. Use format like "1 Gbps" or "100 Mbps"');
-        return;
-      }
-
-      // Handle router interface IP assignment
       let routerInterfaceData = {};
       
       if (fromDevice.type === 'router') {
@@ -196,18 +176,14 @@ Enter IP address for this interface (or leave empty for auto-assignment):`;
       const newConnection = { 
         from: selectedDevice, 
         to: deviceId, 
-        speed,
-        ...routerInterfaceData // Include router interface IPs
+        ...routerInterfaceData
       };
-      console.log('🔗 Creating connection:', newConnection);
 
       setConnections((prevConnections) => [...prevConnections, newConnection]);
       
       try {
         const response = await axios.post('/connections', newConnection);
-        console.log('✅ Connection saved:', response.data);
         
-        // Update router interface IPs in the local state
         if (routerInterfaceData.fromRouterIP || routerInterfaceData.toRouterIP) {
           setDroppedDevices(prevDevices => 
             prevDevices.map(device => {
@@ -228,10 +204,8 @@ Enter IP address for this interface (or leave empty for auto-assignment):`;
           );
         }
       } catch (error) {
-        console.error('❌ Error saving connection:', error);
         if (error.response?.data?.error) {
           alert(`Error: ${error.response.data.error}`);
-          // Remove the connection from local state if backend failed
           setConnections(prevConnections => 
             prevConnections.filter(conn => 
               !(conn.from === selectedDevice && conn.to === deviceId)
@@ -352,7 +326,7 @@ Enter IP address for this interface (or leave empty for auto-assignment):`;
         await axios.get('/clear-database');
         setDroppedDevices([]);
         setConnections([]);
-        setDeviceCounters({ vm: 0, switch: 0, router: 0 });
+        setDeviceCounters({ vm: 0, router: 0 });
         setSelectedDevice(null);
         console.log('✅ Infrastructure cleared');
       } catch (error) {
@@ -414,10 +388,6 @@ Enter IP address for this interface (or leave empty for auto-assignment):`;
             <span className="device-label">Virtual Machine</span>
           </div>
           <div className="device-container">
-            <Switch onDragStart={(e) => handleDragStart(e, 'switch')} isInInventory={true} />
-            <span className="device-label">Network Switch</span>
-          </div>
-          <div className="device-container">
             <Router onDragStart={(e) => handleDragStart(e, 'router')} isInInventory={true} />
             <span className="device-label">Network Router</span>
           </div>
@@ -425,7 +395,6 @@ Enter IP address for this interface (or leave empty for auto-assignment):`;
           <div className="inventory-info">
             <h3>Statistics</h3>
             <p>VMs: {droppedDevices.filter(d => d.type === 'vm').length}</p>
-            <p>Switches: {droppedDevices.filter(d => d.type === 'switch').length}</p>
             <p>Routers: {droppedDevices.filter(d => d.type === 'router').length}</p>
             <p>Connections: {connections.length}</p>
           </div>
@@ -439,25 +408,15 @@ Enter IP address for this interface (or leave empty for auto-assignment):`;
               return (
                 fromDevice &&
                 toDevice && (
-                  <g key={index}>
-                    <line
-                      x1={fromDevice.position.x + 40}
-                      y1={fromDevice.position.y + 40}
-                      x2={toDevice.position.x + 40}
-                      y2={toDevice.position.y + 40}
-                      stroke="#ffffff"
-                      strokeWidth={1}
-                    />
-                    <text
-                      x={(fromDevice.position.x + toDevice.position.x) / 2 + 40}
-                      y={(fromDevice.position.y + toDevice.position.y) / 2 + 40}
-                      fill="#ffff00"
-                      fontSize="12"
-                      textAnchor="middle"
-                    >
-                      {connection.speed}
-                    </text>
-                  </g>
+                  <line
+                    key={index}
+                    x1={fromDevice.position.x + 40}
+                    y1={fromDevice.position.y + 40}
+                    x2={toDevice.position.x + 40}
+                    y2={toDevice.position.y + 40}
+                    stroke="#ffffff"
+                    strokeWidth={1}
+                  />
                 )
               );
             })}
@@ -485,13 +444,6 @@ Enter IP address for this interface (or leave empty for auto-assignment):`;
                   cpu={device.cpu} 
                   memory={device.memory} 
                   storage={device.storage}
-                  ip={device.ip}
-                />
-              )}
-              {device.type === 'switch' && (
-                <Switch 
-                  id={device.id} 
-                  isInInventory={false}
                   ip={device.ip}
                 />
               )}
