@@ -293,11 +293,6 @@ h1 {
     border: 2px solid #0056b3;
 }
 
-.switch {
-    background: linear-gradient(135deg, #28a745, #1e7e34);
-    border: 2px solid #1e7e34;
-}
-
 .router {
     background: linear-gradient(135deg, #ff073a, #dc3545);
     border: 2px solid #dc3545;

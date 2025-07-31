@@ -555,7 +555,7 @@ function generateNetworkedKubeVirtVM(device, ipAssignments, networkSegments) {
   const cloudInit = generateCloudInitForDevice(device, assignments);
   
   // Determine if this is the first device (anchor) or should follow others
-  // Apply affinity to ALL device types (vm, router, switch)
+  // Apply affinity to ALL device types (vm, router)
   const allDevices = Array.from(ipAssignments.keys()).sort();
   const isFirstDevice = device.id === allDevices[0];
   
