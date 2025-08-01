@@ -4,6 +4,9 @@ const bodyParser = require('body-parser');
 
 const app = express();
 
+// Configuration
+const NAMESPACE = 'infrastructure-lab'; // Configurable namespace for all resources
+
 app.use(cors({
   origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
   credentials: true
@@ -411,7 +414,17 @@ function generateKubeVirtInfrastructure(devices, connections) {
   
   components.push(`# KubeVirt Infrastructure
 # Generated: ${new Date().toISOString()}
-# Devices: ${devices.length} | Connections: ${connections.length}`);
+# Devices: ${devices.length} | Connections: ${connections.length}
+# Namespace: ${NAMESPACE}
+
+# Create namespace first
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+  labels:
+    name: ${NAMESPACE}
+    type: infrastructure-lab`);
 
   components.push(generateNetworkAttachmentDefinitions(networkSegments));
   
@@ -433,7 +446,8 @@ function generateVMsOnly(devices, connections) {
   const { ipAssignments, networkSegments } = generateConnectionBasedIPAssignments();
   
   components.push(`# KubeVirt VMs
-# Generated: ${new Date().toISOString()}`);
+# Generated: ${new Date().toISOString()}
+# Namespace: ${NAMESPACE}`);
   
   components.push('# Virtual Machines');
   devices.forEach(device => {
@@ -448,243 +462,19 @@ function generatePVCsOnly(devices, connections) {
   const { networkSegments } = analyzeConnectionBasedTopology();
   
   components.push(`# KubeVirt PVCs and Networks
-# Generated: ${new Date().toISOString()}`);
+# Generated: ${new Date().toISOString()}
+# Namespace: ${NAMESPACE}
+
+# Create namespace first
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+  labels:
+    name: ${NAMESPACE}
+    type: infrastructure-lab`);
   
   components.push(generateNetworkAttachmentDefinitions(networkSegments));
   
   components.push('# Persistent Volume Claims');
-  devices.forEach(device => {
-    components.push(generateDevicePVC(device));
-  });
-  
-  return components.join('\n---\n');
-}
-
-function generateNetworkAttachmentDefinitions(networkSegments) {
-  const components = ['# Network Attachment Definitions'];
-  
-  networkSegments.forEach((segment, segmentName) => {
-    const subnetParts = segment.subnet.split('/');
-    const networkIP = subnetParts[0];
-    const networkIPParts = networkIP.split('.');
-    const networkOctet = networkIPParts[2];
-    
-    const bridgeName = `br${networkOctet}`;
-    const subnetLabel = segment.subnet.replace(/[/.]/g, '-');
-    
-    const networkBase = `${networkIPParts[0]}.${networkIPParts[1]}.${networkIPParts[2]}`;
-    const rangeStart = `${networkBase}.10`;
-    const rangeEnd = `${networkBase}.200`;
-    
-    const safeConnectionId = (segment.connectionId || 'unknown').replace(/[^\w-]/g, '-');
-    
-    components.push(`apiVersion: k8s.cni.cncf.io/v1
-kind: NetworkAttachmentDefinition
-metadata:
-  name: ${segmentName}
-  labels:
-    network-type: infrastructure-segment
-    network-subnet: ${subnetLabel}
-    network-octet: "${networkOctet}"
-    connection: ${safeConnectionId}
-spec:
-  config: |
-    {
-      "cniVersion": "0.3.1",
-      "name": "${segmentName}",
-      "type": "bridge",
-      "bridge": "${bridgeName}",
-      "disableContainerInterface": false,
-      "isDefaultGateway": false,
-      "isGateway": false,
-      "ipMasq": false,
-      "hairpinMode": true,
-      "ipam": {
-        "type": "host-local",
-        "subnet": "${segment.subnet}",
-        "rangeStart": "${rangeStart}",
-        "rangeEnd": "${rangeEnd}"
-      }
-    }`);
-  });
-  
-  return components.join('\n---\n');
-}
-
-function generateDevicePVC(device) {
-  const deviceName = device.id.toLowerCase();
-  const storage = device.storage ? normalizeStorageQuantity(device.storage) : '10Gi';
-  
-  return `apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: ${deviceName}-pvc
-  labels:
-    app: containerized-data-importer
-    device-type: ${device.type}
-    device-id: ${device.id}
-  annotations:
-    cdi.kubevirt.io/storage.import.endpoint: https://cdimage.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.raw
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: ${storage}
-  storageClassName: nfs-client`;
-}
-
-function generateNetworkedKubeVirtVM(device, ipAssignments, networkSegments) {
-  const timestamp = new Date().toISOString().slice(0, 16).replace(/[:.T]/g, '').toLowerCase();
-  const deviceName = `${device.id.toLowerCase()}-${timestamp}`;
-  const pvcName = `${device.id.toLowerCase()}-pvc`;
-  
-  const memory = device.memory ? device.memory.replace(/Gi|GB/i, 'G') : (device.type === 'vm' ? '2G' : '1G');
-  const cpu = device.cpu ? parseInt(device.cpu.match(/\d+/)[0]) || 1 : (device.type === 'router' ? 2 : 1);
-  const assignments = ipAssignments.get(device.id) || [];
-  
-  const interfaces = ['          - name: default\n            masquerade: {}'];
-  const networks = ['      - name: default\n        pod: {}'];
-  
-  assignments.forEach((assignment, index) => {
-    const interfaceName = assignment.network;
-    interfaces.push(`          - name: ${interfaceName}\n            bridge: {}`);
-    networks.push(`      - name: ${interfaceName}\n        multus:\n          networkName: ${assignment.network}`);
-  });
-  
-  const cloudInit = generateCloudInitForDevice(device, assignments);
-  
-  // Determine if this is the first device (anchor) or should follow others
-  // Apply affinity to ALL device types (vm, router)
-  const allDevices = Array.from(ipAssignments.keys()).sort();
-  const isFirstDevice = device.id === allDevices[0];
-  
-  // Generate pod affinity configuration for non-anchor devices
-  let affinityConfig = '';
-  if (!isFirstDevice) {
-    affinityConfig = `      affinity:
-        podAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-          - labelSelector:
-              matchLabels:
-                infrastructure-group: lab-cluster
-            topologyKey: kubernetes.io/hostname`;
-  }
-  
-  return `apiVersion: kubevirt.io/v1
-kind: VirtualMachine
-metadata:
-  name: ${deviceName}
-  labels:
-    kubevirt.io/os: linux
-    device-type: ${device.type}
-    device-id: ${device.id}
-    infrastructure-group: lab-cluster
-spec:
-  runStrategy: Always
-  template:
-    metadata:
-      labels:
-        deployment-id: "${timestamp}"
-        infrastructure-group: lab-cluster
-    spec:
-${affinityConfig}
-      domain:
-        cpu:
-          cores: ${cpu}
-        devices:
-          disks:
-          - disk:
-              bus: virtio
-            name: disk0
-          - cdrom:
-              bus: sata
-              readonly: true
-            name: cloudinitdisk
-          interfaces:
-${interfaces.join('\n')}
-        machine:
-          type: q35
-        resources:
-          requests:
-            memory: ${memory}
-      networks:
-${networks.join('\n')}
-      volumes:
-      - name: disk0
-        persistentVolumeClaim:
-          claimName: ${pvcName}
-      - cloudInitNoCloud:
-          userData: |
-            ${cloudInit.split('\n').join('\n            ')}
-        name: cloudinitdisk`;
-}
-
-function generateCloudInitForDevice(device, assignments) {
-  let config = `#cloud-config
-hostname: ${device.id.toLowerCase()}
-ssh_pwauth: true
-disable_root: false
-chpasswd:
-  list: |
-    root:pass123
-    debian:pass123
-  expire: false`;
-
-  if (assignments.length > 0) {
-    config += `
-write_files:
-- path: /tmp/net.sh
-  permissions: '0755'
-  content: |
-    #!/bin/bash
-    dhclient enp1s0`;
-    
-    assignments.forEach((assignment, index) => {
-      const iface = `enp${index + 2}s0`;
-      const name = `eth${index + 1}`;
-      const ip = assignment.ip;
-      
-      config += `
-    ip link set ${iface} name ${name} 2>/dev/null||true
-    ip addr add ${ip}/24 dev ${name}
-    ip link set ${name} up`;
-    });
-    
-    if (device.type === 'router') {
-      config += `
-    echo 1>/proc/sys/net/ipv4/ip_forward
-    iptables -A FORWARD -j ACCEPT`;
-    }
-    
-    if (device.type === 'vm' && assignments.length > 0) {
-      config += `
-    ip route del default via 10.0.2.1 dev enp1s0 2>/dev/null||true
-    ip route add default via ${assignments[0].gateway} dev eth1 metric 50
-    ip route add default via 10.0.2.1 dev enp1s0 metric 100 2>/dev/null||true`;
-    }
-    
-    config += `
-runcmd:
-- /tmp/net.sh`;
-  } else {
-    config += `
-runcmd:
-- dhclient enp1s0`;
-  }
-
-  return config;
-}
-
-function normalizeStorageQuantity(storage) {
-  if (!storage) return '10Gi';
-  const cleaned = storage.toString().trim().replace(/\s+/g, '');
-  
-  return cleaned
-    .replace(/(\d+)GB?$/i, '$1Gi')
-    .replace(/(\d+)MB?$/i, '$1Mi')
-    .replace(/(\d+)TB?$/i, '$1Ti')
-    .replace(/(\d+)G$/i, '$1Gi')
-    .replace(/(\d+)M$/i, '$1Mi')
-    .replace(/(\d+)T$/i, '$1Ti') || '10Gi';
-}
+  devices.for
